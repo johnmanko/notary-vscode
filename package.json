@@ -1,0 +1,115 @@
+{
+  "name": "notary",
+  "displayName": "Notary",
+  "description": "Notary is a JWT Viewer and Validator VSCode Extension",
+  "version": "1.0.0",
+  "license": "GPL-3.0-only",
+  "engines": {
+    "vscode": "^1.110.0"
+  },
+  "publisher": "JohnManko",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/johnmanko/notary-vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/johnmanko/notary-vscode/issues"
+  },
+  "galleryBanner": {
+    "color": "#003d7e",
+    "theme": "dark"
+  },
+  "keywords": [
+    "jwt",
+    "token",
+    "authentication",
+    "decoder",
+    "viewer"
+  ],
+  "categories": [
+    "Programming Languages",
+    "Visualization",
+    "Testing",
+    "Other"
+  ],
+  "icon": "dist/images/icon.png",
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "notary-container",
+          "title": "Notary",
+          "icon": "dist/images/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "notary-container": [
+        {
+          "type": "webview",
+          "id": "notary.sidebarView",
+          "name": "JWT Viewer",
+          "icon": "dist/images/icon.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "notary.openViewer",
+        "title": "Open JWT Viewer (Editor Panel)",
+        "category": "Notary",
+        "icon": "dist/images/icon.svg"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "notary.openViewer",
+        "key": "ctrl+shift+j",
+        "mac": "cmd+shift+j",
+        "when": "!inQuickOpen"
+      },
+      {
+        "command": "notary.openViewer",
+        "key": "ctrl+alt+j",
+        "mac": "cmd+alt+j",
+        "when": "!inQuickOpen"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "clean:dist": "node -e \"require('node:fs').rmSync('dist',{ recursive: true, force: true })\"",
+    "compile": "npm run clean:dist && npm run compile-ts && npm run check-types && npm run lint && node esbuild.js",
+    "compile-ts": "tsc -p . && tsc -p src/webview/tsconfig.json",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run clean:dist && npm run compile-ts && npm run check-types && npm run lint && node esbuild.js --production",
+    "prepare-dist-package": "node prepare-dist-package.js",
+    "package:vsix": "npm run package && npm run prepare-dist-package && cd dist && ../node_modules/.bin/vsce package --out notary-${npm_package_version}.vsix",
+    "compile-tests": "tsc -p tsconfig.test.json",
+    "watch-tests": "tsc -p tsconfig.test.json -w",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit && tsc --noEmit -p src/webview/tsconfig.json",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/vscode": "^1.110.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.6.0",
+    "esbuild": "^0.27.3",
+    "eslint": "^9.39.3",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1",
+    "undici-types": "^6.21.0"
+  },
+  "dependencies": {
+    "jose": "^6.2.2"
+  }
+}

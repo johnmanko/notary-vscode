@@ -1,0 +1,13 @@
+// Place your settings in this file to overwrite default and user settings.
+{
+    "files.exclude": {
+        "dist-test": false, // set this to true to hide the "dist-test" folder with compiled test JS files
+        "dist": false // set this to true to hide the "dist" folder with the compiled extension JS files
+    },
+    "search.exclude": {
+        "dist-test": true, // set this to false to include "dist-test" folder in search results
+        "dist": true // set this to false to include "dist" folder in search results
+    },
+    // Turn off tsc task auto detection since we have the necessary tasks as npm scripts
+    "typescript.tsc.autoDetect": "off"
+}

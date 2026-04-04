@@ -1,0 +1,107 @@
+<!--
+Copyright (C) 2026 John Manko
+You may convey verbatim copies of the Program's source code as you receive it, in any medium, provided that you
+conspicuously and appropriately publish on each copy an appropriate copyright notice; keep intact all notices
+stating that this License and any non-permissive additional terms apply to the code; keep intact all notices of
+the absence of any warranty; and give all recipients a copy of this License along with the Program.
+
+SPDX-License-Identifier: GPL-3.0
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{CSP_SOURCE}}; script-src {{CSP_SOURCE}} 'nonce-{{NONCE}}';">
+	<link rel="stylesheet" href="{{STYLE_URI}}">
+	<title>Key Details</title>
+</head>
+<body>
+	<div class="container">
+		<div class="header">
+			<h1 id="key-title">Loading...</h1>
+			<span class="key-badge" id="key-source"></span>
+		</div>
+
+		<div class="section" id="source-selection-section" style="display: none;">
+			<label class="label">Key Source</label>
+			<div class="radio-group">
+				<label class="radio-label">
+					<input type="radio" name="key-source" value="url" id="source-url" checked />
+					<span>Fetch from URL</span>
+				</label>
+				<label class="radio-label">
+					<input type="radio" name="key-source" value="manual" id="source-manual" />
+					<span>Manual Entry</span>
+				</label>
+			</div>
+		</div>
+
+		<div class="section">
+			<label class="label">Key Name</label>
+			<input type="text" id="key-name" class="input" placeholder="Key name" />
+		</div>
+
+		<div class="section" id="url-section" style="display: none;">
+			<label class="label">OIDC/JWKS URL</label>
+			<div class="readonly-field" id="key-url-readonly"></div>
+			<input type="text" id="key-url-input" class="input" placeholder="https://example.com or https://example.com/.well-known/jwks.json" style="display: none;" />
+			<div class="help-text" id="url-help" style="display: none;">Enter base URL, OpenID configuration URL, or direct JWKS URL</div>
+		</div>
+
+		<div class="section" id="refresh-section" style="display: none;">
+			<label class="label">Refresh Period</label>
+			<div class="readonly-field" id="refresh-period-readonly"></div>
+			<select id="refresh-period-select" class="input" style="display: none;">
+				<option value="daily">Daily Refresh</option>
+				<option value="weekly" selected>Weekly Refresh</option>
+				<option value="monthly">Monthly Refresh</option>
+			</select>
+		</div>
+
+		<div class="section" id="public-key-section">
+			<label class="label">Public Key</label>
+			<textarea id="key-data" class="textarea" rows="12" placeholder="Public key data"></textarea>
+			<div class="help-text">PEM-encoded public key (RSA, EC, or EdDSA)</div>
+		</div>
+
+		<div class="section" id="raw-json-section" style="display: none;">
+			<button id="raw-json-toggle" class="btn btn-secondary" type="button">Show Raw JSON</button>
+			<pre id="raw-json-content" class="readonly-field" style="display: none; margin-top: 8px; white-space: pre-wrap; max-height: 240px; overflow: auto;"></pre>
+		</div>
+
+		<div class="section" id="manual-metadata-section">
+			<label class="label">Claims</label>
+			<div id="claims-fields" class="metadata-grid"></div>
+		</div>
+
+		<div class="section" id="metadata-section">
+			<label class="label">Date Information</label>
+			<div class="metadata-grid">
+				<div class="metadata-item">
+					<span class="metadata-label">Created:</span>
+					<span id="created-at"></span>
+				</div>
+				<div class="metadata-item" id="last-fetched-item" style="display: none;">
+					<span class="metadata-label">Last Fetched:</span>
+					<span id="last-fetched"></span>
+				</div>
+				<div class="metadata-item" id="next-refresh-item" style="display: none;">
+					<span class="metadata-label">Next Refresh:</span>
+					<span id="next-refresh"></span>
+				</div>
+			</div>
+		</div>
+
+		<div class="error-banner" id="error-banner"></div>
+
+		<div class="actions">
+			<button id="save-btn" class="btn btn-primary">Save Changes</button>
+			<button id="refresh-btn" class="btn btn-secondary" style="display: none;">Refresh from URL</button>
+			<button id="delete-btn" class="btn btn-danger">Delete Key</button>
+		</div>
+	</div>
+
+	<script nonce="{{NONCE}}" src="{{SCRIPT_URI}}"></script>
+</body>
+</html>

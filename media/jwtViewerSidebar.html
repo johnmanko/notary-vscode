@@ -1,0 +1,42 @@
+<!--
+Copyright (C) 2026 John Manko
+You may convey verbatim copies of the Program's source code as you receive it, in any medium, provided that you
+conspicuously and appropriately publish on each copy an appropriate copyright notice; keep intact all notices
+stating that this License and any non-permissive additional terms apply to the code; keep intact all notices of
+the absence of any warranty; and give all recipients a copy of this License along with the Program.
+
+SPDX-License-Identifier: GPL-3.0
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{CSP_SOURCE}}; script-src {{CSP_SOURCE}} 'nonce-{{NONCE}}';">
+	<link rel="stylesheet" href="{{STYLE_URI}}">
+	<title>JWT Viewer</title>
+</head>
+<body>
+
+<div class="toolbar">
+	<button class="new-btn" id="new-btn">+ New JWT Viewer</button>
+</div>
+
+<div class="section-label">Open Viewers</div>
+<div id="panel-list">
+	<div class="empty">No open viewers.<br>Click above to start one.</div>
+</div>
+
+<div class="section-label">Validation Keys</div>
+
+<div class="toolbar">
+	<button class="new-btn" id="add-key-btn">+ Add Validation Key</button>
+</div>
+
+<div id="key-list">
+	<div class="empty">No validation keys.<br>Click above to add one.</div>
+</div>
+
+<script nonce="{{NONCE}}" src="{{SCRIPT_URI}}"></script>
+</body>
+</html>

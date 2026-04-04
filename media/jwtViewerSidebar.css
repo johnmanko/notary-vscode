@@ -1,0 +1,270 @@
+/**
+ * Copyright (C) 2026 John Manko
+ * 
+ * You may convey verbatim copies of the Program's source code as you receive it, in any medium, provided that you
+ * conspicuously and appropriately publish on each copy an appropriate copyright notice; keep intact all notices
+ * stating that this License and any non-permissive additional terms apply to the code; keep intact all notices of
+ * the absence of any warranty; and give all recipients a copy of this License along with the Program.
+ * 
+ * SPDX-License-Identifier: GPL-3.0
+ */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+	font-family: var(--vscode-font-family);
+	font-size: var(--vscode-font-size);
+	color: var(--vscode-foreground);
+	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+	padding: 8px 0 16px;
+	user-select: none;
+}
+
+.toolbar {
+	padding: 0 10px 10px;
+}
+
+.new-btn {
+	width: 100%;
+	padding: 5px 10px;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border: none;
+	border-radius: 2px;
+	font-size: 12px;
+	font-family: var(--vscode-font-family);
+	cursor: pointer;
+	text-align: center;
+}
+.new-btn:hover  { background: var(--vscode-button-hoverBackground); }
+.new-btn:active { opacity: 0.85; }
+
+.section-label {
+	font-size: 10px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.1em;
+	color: var(--vscode-sideBarSectionHeader-foreground, var(--vscode-descriptionForeground));
+	padding: 6px 10px 5px;
+	border-top: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border));
+	background: var(--vscode-sideBarSectionHeader-background, transparent);
+}
+
+.panel-item {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 7px 10px 7px 14px;
+	cursor: pointer;
+	border-left: 2px solid transparent;
+	transition: background 0.1s;
+}
+.panel-item:hover {
+	background: var(--vscode-list-hoverBackground);
+	border-left-color: var(--vscode-focusBorder);
+}
+.panel-item:active { opacity: 0.8; }
+
+.pi-name {
+	font-family: var(--vscode-editor-font-family, 'Menlo', 'Consolas', monospace);
+	font-size: 11.5px;
+	color: var(--vscode-foreground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.pi-time {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.empty {
+	padding: 14px 10px;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	font-style: italic;
+	line-height: 1.5;
+}
+
+/* Key Management Styles */
+.key-form {
+	padding: 10px;
+	border-bottom: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.1));
+}
+
+.form-input {
+	width: 100%;
+	padding: 5px 8px;
+	margin-bottom: 8px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 2px;
+	font-size: 12px;
+	font-family: var(--vscode-font-family);
+}
+
+.form-input:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.form-input:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+textarea.form-input {
+	font-family: var(--vscode-editor-font-family, 'Menlo', 'Consolas', monospace);
+	resize: vertical;
+}
+
+.form-section {
+	margin-bottom: 10px;
+}
+
+.form-label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 11px;
+	margin-bottom: 6px;
+	cursor: pointer;
+	color: var(--vscode-foreground);
+}
+
+.form-label input[type="radio"] {
+	cursor: pointer;
+}
+
+.form-help {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: -4px;
+	margin-bottom: 6px;
+	padding-left: 2px;
+	line-height: 1.4;
+}
+
+.form-btn {
+	width: 100%;
+	padding: 5px 10px;
+	background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+	color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+	border: none;
+	border-radius: 2px;
+	font-size: 12px;
+	font-family: var(--vscode-font-family);
+	cursor: pointer;
+	text-align: center;
+}
+
+.form-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
+}
+
+.form-btn:active {
+	opacity: 0.85;
+}
+
+.error-msg {
+	margin-top: 6px;
+	padding: 4px 6px;
+	font-size: 11px;
+	color: var(--vscode-errorForeground);
+	background: var(--vscode-inputValidation-errorBackground);
+	border: 1px solid var(--vscode-inputValidation-errorBorder);
+	border-radius: 2px;
+	display: none;
+}
+
+.error-msg.visible {
+	display: block;
+}
+
+.key-item {
+	padding: 8px 10px 8px 14px;
+	border-left: 2px solid transparent;
+	border-bottom: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.05));
+}
+
+.key-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.key-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	margin-bottom: 4px;
+}
+
+.key-name {
+	font-family: var(--vscode-editor-font-family, 'Menlo', 'Consolas', monospace);
+	font-size: 11.5px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+
+.key-badge {
+	font-size: 9px;
+	padding: 2px 5px;
+	border-radius: 2px;
+	text-transform: uppercase;
+	font-weight: 600;
+	letter-spacing: 0.05em;
+}
+
+.key-badge.manual {
+	background: var(--vscode-charts-blue);
+	color: #fff;
+}
+
+.key-badge.url {
+	background: var(--vscode-charts-green);
+	color: #fff;
+}
+
+.key-details {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.4;
+}
+
+.key-url {
+	margin: 2px 0;
+	word-break: break-all;
+}
+
+.key-times {
+	margin: 2px 0;
+}
+
+.key-actions {
+	display: flex;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.key-action-btn {
+	padding: 3px 8px;
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	border: none;
+	border-radius: 2px;
+	font-size: 10px;
+	cursor: pointer;
+}
+
+.key-action-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.key-action-btn.danger {
+	background: var(--vscode-errorForeground);
+	color: #fff;
+}
+
+.key-action-btn.danger:hover {
+	opacity: 0.8;
+}

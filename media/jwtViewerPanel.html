@@ -1,0 +1,115 @@
+<!--
+Copyright (C) 2026 John Manko
+You may convey verbatim copies of the Program's source code as you receive it, in any medium, provided that you
+conspicuously and appropriately publish on each copy an appropriate copyright notice; keep intact all notices
+stating that this License and any non-permissive additional terms apply to the code; keep intact all notices of
+the absence of any warranty; and give all recipients a copy of this License along with the Program.
+
+SPDX-License-Identifier: GPL-3.0
+ -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{CSP_SOURCE}}; script-src {{CSP_SOURCE}} 'nonce-{{NONCE}}';">
+	<link rel="stylesheet" href="{{STYLE_URI}}">
+	<title>JWT Viewer</title>
+</head>
+<body>
+
+<header class="app-header">
+	<h1>JWT Viewer</h1>
+	<span class="subtitle">Decode and inspect JSON Web Tokens</span>
+</header>
+
+<div class="main">
+
+	<!-- LEFT: Encoded input -->
+	<div class="left-panel">
+		<div>
+			<div class="panel-label">Encoded</div>
+			<div
+				id="jwt-input"
+				contenteditable="true"
+				data-placeholder="Paste your JWT here…"
+				spellcheck="false"
+				autocomplete="off"
+			></div>
+		</div>
+
+		<div class="error-banner" id="error-banner">
+			<span class="error-icon">⚠</span>
+			<span id="error-text"></span>
+		</div>
+
+		<button class="clear-btn" id="clear-btn">Clear</button>
+	</div>
+
+	<!-- RIGHT: Decoded sections -->
+	<div class="right-panel">
+
+		<div class="panel-label">Decoded</div>
+
+		<!-- Header -->
+		<div class="decoded-section ds-header">
+			<div class="section-header">
+				<div class="section-title">
+					<div class="section-dot"></div>
+					<h3>Header</h3>
+				</div>
+				<button class="copy-btn" data-target="header-content">Copy</button>
+			</div>
+			<div class="decoded-content placeholder" id="header-content">Awaiting token…</div>
+		</div>
+
+		<!-- Payload -->
+		<div class="decoded-section ds-payload">
+			<div class="section-header">
+				<div class="section-title">
+					<div class="section-dot"></div>
+					<h3>Payload</h3>
+					<span class="expiry-badge" id="expiry-badge"></span>
+				</div>
+				<button class="copy-btn" data-target="payload-content">Copy</button>
+			</div>
+			<div class="ts-table hidden" id="ts-table"></div>
+			<div class="decoded-content placeholder" id="payload-content">Awaiting token…</div>
+		</div>
+
+		<!-- Validation -->
+		<div class="decoded-section ds-validation">
+			<div class="section-header">
+				<div class="section-title">
+					<div class="section-dot"></div>
+					<h3>Validation</h3>
+					<span class="validation-status" id="validation-status"></span>
+				</div>
+			</div>
+			<div class="validation-controls">
+				<select id="key-select" class="key-select">
+					<option value="">Select a validation key...</option>
+				</select>
+				<button class="validate-btn" id="validate-btn" disabled>Validate Signature</button>
+			</div>
+			<div class="validation-result hidden" id="validation-result"></div>
+		</div>
+
+		<!-- Signature -->
+		<div class="decoded-section ds-sig">
+			<div class="section-header">
+				<div class="section-title">
+					<div class="section-dot"></div>
+					<h3>Signature</h3>
+				</div>
+				<button class="copy-btn" data-target="sig-content">Copy</button>
+			</div>
+			<div class="decoded-content placeholder" id="sig-content">Awaiting token…</div>
+		</div>
+
+	</div>
+</div>
+
+<script nonce="{{NONCE}}" src="{{SCRIPT_URI}}"></script>
+</body>
+</html>
