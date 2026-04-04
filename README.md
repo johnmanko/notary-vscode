@@ -161,7 +161,7 @@ npm run package
 
 ## Release Notes
 
-### 0.0.1
+### 1.0.0
 
 Initial release of Notary:
 - JWT decoding with syntax highlighting
