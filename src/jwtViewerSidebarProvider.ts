@@ -31,7 +31,8 @@ export class JwtViewerSidebarProvider implements vscode.WebviewViewProvider {
 		private readonly _extensionUri: vscode.Uri,
 		context: vscode.ExtensionContext,
 		private readonly _onNewPanel: () => void,
-		private readonly _onActivatePanel: (id: string) => void
+		private readonly _onActivatePanel: (id: string) => void,
+		private readonly _getCurrentPanels: () => PanelInfo[]
 	) {
 		this.keyManager = new KeyManager(context);
 	}
@@ -47,6 +48,11 @@ export class JwtViewerSidebarProvider implements vscode.WebviewViewProvider {
 		}
 	}
 
+	private async syncSidebarState(): Promise<void> {
+		this.updatePanelList(this._getCurrentPanels());
+		await this.updateKeyList();
+	}
+
 	resolveWebviewView(
 		webviewView: vscode.WebviewView,
 		_context: vscode.WebviewViewResolveContext,
@@ -58,7 +64,9 @@ export class JwtViewerSidebarProvider implements vscode.WebviewViewProvider {
 		
 		// Handle messages from webview
 		webviewView.webview.onDidReceiveMessage(async (message) => {
-			if (message.type === 'newPanel') {
+			if (message.type === 'ready') {
+				await this.syncSidebarState();
+			} else if (message.type === 'newPanel') {
 				this._onNewPanel();
 			} else if (message.type === 'activatePanel') {
 				this._onActivatePanel(message.id as string);
@@ -77,8 +85,14 @@ export class JwtViewerSidebarProvider implements vscode.WebviewViewProvider {
 			}
 		});
 
-		// Initial load of keys
-		this.updateKeyList();
+		webviewView.onDidChangeVisibility(async () => {
+			if (webviewView.visible) {
+				await this.syncSidebarState();
+			}
+		});
+
+		// Initial load in case webview script is already ready.
+		void this.syncSidebarState();
 	}
 
 	private async handleAddNewKey() {

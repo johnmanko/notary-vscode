@@ -68,7 +68,8 @@ export function activate(context: vscode.ExtensionContext) {
 		(id) => {
 			const entry = panelRegistry.get(id);
 			if (entry) { entry.panel.reveal(); }
-		}
+		},
+		() => buildSidebarList()
 	);
 
 	// Set callback to update all panels when keys change

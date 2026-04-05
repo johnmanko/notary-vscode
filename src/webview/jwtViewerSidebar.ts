@@ -170,3 +170,6 @@ function renderKeyList(keys: ValidationKey[]): void {
 		});
 	});
 }
+
+// Request initial sidebar state after webview script is ready.
+vscodeApi.postMessage({ type: 'ready' });
