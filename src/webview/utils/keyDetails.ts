@@ -81,8 +81,7 @@ const CLAIM_NAME_DICTIONARY: Record<string, string> = {
 	crv: 'Curve',
 	x5c: 'X.509 Certificate Chain',
 	x5t: 'X.509 SHA-1 Thumbprint',
-	'x5t#S256': 'X.509 SHA-256 Thumbprint',
-	key: 'Public Key'
+	'x5t#S256': 'X.509 SHA-256 Thumbprint'
 };
 
 const DEFAULT_MANUAL_CLAIMS: Record<string, string> = {
@@ -94,7 +93,7 @@ const DEFAULT_MANUAL_CLAIMS: Record<string, string> = {
 	kid: 'key1'
 };
 
-const NON_EDITABLE_MANUAL_CLAIMS = new Set(['key', 'n']);
+const NON_EDITABLE_MANUAL_CLAIMS = new Set(['n']);
 
 function ensureManualClaimDefaults(target: Record<string, unknown>): void {
 	for (const [claimKey, defaultValue] of Object.entries(DEFAULT_MANUAL_CLAIMS)) {
@@ -401,7 +400,6 @@ function getRawJsonHideLabel(): string {
 
 function buildManualKeyModelForPreview(): Record<string, unknown> {
 	ensureManualClaimDefaults(currentClaims);
-	const normalizedPem = normalizePemInput(keyDataTextarea.value);
 	return {
 		kty: typeof currentClaims.kty === 'string' ? currentClaims.kty : 'RSA',
 		n: typeof currentClaims.n === 'string' ? currentClaims.n : '',
@@ -409,8 +407,7 @@ function buildManualKeyModelForPreview(): Record<string, unknown> {
 		use: typeof currentClaims.use === 'string' ? currentClaims.use : 'sig',
 		alg: typeof currentClaims.alg === 'string' ? currentClaims.alg : 'RS256',
 		kid: typeof currentClaims.kid === 'string' ? currentClaims.kid : 'key1',
-		typ: typeof currentClaims.typ === 'string' ? currentClaims.typ : 'JWT',
-		key: normalizedPem
+		typ: typeof currentClaims.typ === 'string' ? currentClaims.typ : 'JWT'
 	};
 }
 
@@ -969,9 +966,7 @@ function renderClaims(claims: Record<string, unknown> | undefined, readOnly: boo
 		const label = `${commonName} (${key})`;
 		let displayValue = '';
 		let editable = !readOnly && !NON_EDITABLE_MANUAL_CLAIMS.has(key);
-		if (key === 'key') {
-			displayValue = '(shown in Public Key section)';
-		} else if (key === 'n') {
+		if (key === 'n') {
 			displayValue = typeof value === 'string' ? value : '';
 		} else if (typeof value === 'string') {
 			displayValue = value;
@@ -1010,9 +1005,7 @@ function getClaimFieldHtml(claimKey: string, value: unknown, readOnly: boolean):
 	const label = `${commonName} (${claimKey})`;
 	let displayValue = '';
 	let editable = !readOnly && !NON_EDITABLE_MANUAL_CLAIMS.has(claimKey);
-	if (claimKey === 'key') {
-		displayValue = '(shown in Public Key section)';
-	} else if (claimKey === 'n') {
+	if (claimKey === 'n') {
 		displayValue = typeof value === 'string' ? value : '';
 	} else if (typeof value === 'string') {
 		displayValue = value;

@@ -178,26 +178,6 @@ function resolveKeyByRef(keys: Record<string, unknown>[], preferredRef?: string)
 	return null;
 }
 
-function decodeBase64UrlToBuffer(value: string): Buffer {
-	const base64 = value.replaceAll('-', '+').replaceAll('_', '/');
-	const pad = base64.length % 4;
-	const padded = pad === 0 ? base64 : base64 + '='.repeat(4 - pad);
-	return Buffer.from(padded, 'base64');
-}
-
-function tryDecodeNClaim(jwk: Record<string, unknown>): string {
-	const n = jwk.n;
-	if (typeof n !== 'string') {
-		return '';
-	}
-	try {
-		const bytes = decodeBase64UrlToBuffer(n);
-		return bytes.toString('hex');
-	} catch {
-		return '';
-	}
-}
-
 function sanitizeClaim(value: unknown, fallback: string): string {
 	if (typeof value !== 'string') {
 		return fallback;
@@ -352,7 +332,6 @@ export class KeyManager {
 			}
 			const key = await this.storageManager.addManualKey(
 				name.trim(),
-				pemValidation.normalized,
 				normalizedAlgorithm,
 				normalizedKeyType,
 				normalizedClaims,
@@ -632,7 +611,6 @@ export class KeyManager {
 			const result = await this.storageManager.updateManualKey(
 				id,
 				name.trim(),
-				pemValidation.normalized,
 				normalizedAlgorithm,
 				normalizedKeyType,
 				normalizedClaims,
@@ -821,10 +799,7 @@ export class KeyManager {
 					.export({ type: 'spki', format: 'pem' })
 					.toString();
 			} catch {
-				decodedKey = tryDecodeNClaim(selectedJwk);
-				if (!decodedKey && typeof selectedJwk.key === 'string') {
-					decodedKey = selectedJwk.key;
-				}
+				decodedKey = '';
 			}
 		}
 

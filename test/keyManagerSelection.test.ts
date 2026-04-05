@@ -151,8 +151,7 @@ suite('Key Manager Selection and Editor Data', () => {
 			alg: 'RS256',
 			use: 'sig',
 			kid: manualKid,
-			typ: 'JWT',
-			key: publicKey.export({ type: 'spki', format: 'pem' }).toString()
+			typ: 'JWT'
 		};
 
 		const key: ValidationKey = {

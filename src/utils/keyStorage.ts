@@ -34,17 +34,6 @@ function generateKeyId(): string {
 	return `key_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
 }
 
-/**
- * Normalize PEM text entered in text areas.
- * Supports both real newlines and escaped "\\n" sequences.
- */
-function normalizePemInput(publicKey: string): string {
-	return publicKey
-		.trim()
-		.replaceAll('\r\n', '\n')
-		.replaceAll(String.raw`\n`, '\n');
-}
-
 function sanitizeClaimValue(value: unknown, fallback: string): string {
 	if (typeof value !== 'string') {
 		return fallback;
@@ -66,7 +55,7 @@ function buildKeySetModel(keys: Record<string, unknown>[]): string {
 	});
 }
 
-function buildManualKeyModel(publicKey: string, algorithm: string, keyType: string, claims?: Record<string, unknown>): string {
+function buildManualKeyModel(algorithm: string, keyType: string, claims?: Record<string, unknown>): string {
 	const normalizedClaims = claims ? { ...claims } : {};
 	const modelKey = {
 		kty: sanitizeClaimValue(normalizedClaims.kty, keyType),
@@ -75,8 +64,7 @@ function buildManualKeyModel(publicKey: string, algorithm: string, keyType: stri
 		use: sanitizeClaimValue(normalizedClaims.use, 'sig'),
 		alg: sanitizeClaimValue(normalizedClaims.alg, algorithm),
 		kid: sanitizeClaimValue(normalizedClaims.kid, 'key1'),
-		typ: sanitizeClaimValue(normalizedClaims.typ, 'JWT'),
-		key: normalizePemInput(publicKey)
+		typ: sanitizeClaimValue(normalizedClaims.typ, 'JWT')
 	};
 	return buildKeySetModel([modelKey]);
 }
@@ -107,13 +95,13 @@ export class KeyStorageManager {
 	/**
 	 * Add a new manual validation key
 	 */
-	async addManualKey(name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, description?: string): Promise<ManualValidationKey> {
+	async addManualKey(name: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, description?: string): Promise<ManualValidationKey> {
 		const key: ManualValidationKey = {
 			id: generateKeyId(),
 			name,
 			description: sanitizeDescription(description),
 			source: KeySource.Manual,
-			keyData: encodeToBase64(buildManualKeyModel(publicKey, algorithm, keyType, claims)),
+			keyData: encodeToBase64(buildManualKeyModel(algorithm, keyType, claims)),
 			createdAt: Date.now()
 		};
 
@@ -233,7 +221,7 @@ export class KeyStorageManager {
 	/**
 	 * Update an existing manual key
 	 */
-	async updateManualKey(id: string, name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, description?: string): Promise<ManualValidationKey | undefined> {
+	async updateManualKey(id: string, name: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, description?: string): Promise<ManualValidationKey | undefined> {
 		const keys = await this.getKeys();
 		const keyIndex = keys.findIndex(k => k.id === id);
 		
@@ -251,7 +239,7 @@ export class KeyStorageManager {
 		if (description !== undefined) {
 			manualKey.description = sanitizeDescription(description);
 		}
-		manualKey.keyData = encodeToBase64(buildManualKeyModel(publicKey, algorithm, keyType, claims));
+		manualKey.keyData = encodeToBase64(buildManualKeyModel(algorithm, keyType, claims));
 
 		await this.context.globalState.update(STORAGE_KEY, keys);
 		return manualKey;
