@@ -55,6 +55,7 @@ let currentKey: any = null;
 let isUrlKey = false;
 let isCreateMode = false;
 let currentClaims: Record<string, unknown> = {};
+let modulusDerivationRequestId = 0;
 
 const CLAIM_NAME_DICTIONARY: Record<string, string> = {
 	alg: 'Algorithm',
@@ -73,7 +74,208 @@ const CLAIM_NAME_DICTIONARY: Record<string, string> = {
 	key: 'Public Key'
 };
 
-const MANUAL_EDITABLE_CLAIMS = new Set(['alg', 'kty']);
+const DEFAULT_MANUAL_CLAIMS: Record<string, string> = {
+	kty: 'RSA',
+	n: '',
+	e: 'AQAB',
+	use: 'sig',
+	alg: 'RS256',
+	kid: 'key1'
+};
+
+const NON_EDITABLE_MANUAL_CLAIMS = new Set(['key', 'n']);
+
+function ensureManualClaimDefaults(target: Record<string, unknown>): void {
+	for (const [claimKey, defaultValue] of Object.entries(DEFAULT_MANUAL_CLAIMS)) {
+		if (typeof target[claimKey] !== 'string' || !(target[claimKey] as string).trim()) {
+			target[claimKey] = defaultValue;
+		}
+	}
+}
+
+function isBase64Url(value: string): boolean {
+	return /^[A-Za-z0-9_-]+$/.test(value);
+}
+
+function decodeBase64UrlToBytes(value: string): Uint8Array {
+	const base64 = value.replaceAll('-', '+').replaceAll('_', '/');
+	const padLength = base64.length % 4;
+	const padded = padLength === 0 ? base64 : base64 + '='.repeat(4 - padLength);
+	const decoded = atob(padded);
+	const bytes = new Uint8Array(decoded.length);
+	for (let index = 0; index < decoded.length; index += 1) {
+		bytes[index] = decoded.charCodeAt(index);
+	}
+	return bytes;
+}
+
+function bytesToBigInt(bytes: Uint8Array): bigint {
+	let result = 0n;
+	for (const byte of bytes) {
+		result = (result << 8n) | BigInt(byte);
+	}
+	return result;
+}
+
+function getExponentHint(value: string): { valid: boolean; message: string } {
+	const trimmed = value.trim();
+	if (!trimmed) {
+		return { valid: false, message: 'Exponent (e) is required and must be Base64URL.' };
+	}
+	if (!isBase64Url(trimmed)) {
+		return { valid: false, message: 'Exponent (e) must be Base64URL characters only: A-Z, a-z, 0-9, -, _' };
+	}
+	try {
+		const bytes = decodeBase64UrlToBytes(trimmed);
+		if (bytes.length === 0) {
+			return { valid: false, message: 'Exponent (e) decoded to an empty value.' };
+		}
+		const numericValue = bytesToBigInt(bytes).toString(10);
+		if (trimmed === 'AQAB') {
+			return { valid: true, message: `AQAB is Base64URL for exponent ${numericValue} (common RSA public exponent).` };
+		}
+		return { valid: true, message: `Decoded exponent value: ${numericValue}` };
+	} catch {
+		return { valid: false, message: 'Exponent (e) is not valid Base64URL.' };
+	}
+}
+
+function renderExponentHint(input: HTMLInputElement): void {
+	const wrapper = input.closest('.metadata-item');
+	if (!wrapper) {
+		return;
+	}
+
+	let hint = wrapper.querySelector('.claim-hint') as HTMLDivElement | null;
+	if (!hint) {
+		hint = document.createElement('div');
+		hint.className = 'claim-hint';
+		wrapper.appendChild(hint);
+	}
+
+	const hintState = getExponentHint(input.value);
+	hint.textContent = hintState.message;
+	hint.classList.toggle('invalid', !hintState.valid);
+	input.classList.toggle('input-invalid', !hintState.valid);
+}
+
+function renderModulusHint(message: string): void {
+	const modulusInput = claimsFields.querySelector('input[data-claim-key="n"]') as HTMLInputElement | null;
+	if (!modulusInput) {
+		return;
+	}
+	const wrapper = modulusInput.closest('.metadata-item');
+	if (!wrapper) {
+		return;
+	}
+
+	let hint = wrapper.querySelector('.claim-hint') as HTMLDivElement | null;
+	if (!hint) {
+		hint = document.createElement('div');
+		hint.className = 'claim-hint';
+		wrapper.appendChild(hint);
+	}
+
+	hint.textContent = message;
+}
+
+function extractPemBodyBase64(normalizedPem: string): string | null {
+	const supportedHeaders = [
+		{ begin: '-----BEGIN PUBLIC KEY-----', end: '-----END PUBLIC KEY-----' },
+		{ begin: '-----BEGIN RSA PUBLIC KEY-----', end: '-----END RSA PUBLIC KEY-----' }
+	];
+
+	const headerMatch = supportedHeaders.find(h => normalizedPem.includes(h.begin) && normalizedPem.includes(h.end));
+	if (!headerMatch) {
+		return null;
+	}
+
+	const beginIndex = normalizedPem.indexOf(headerMatch.begin) + headerMatch.begin.length;
+	const endIndex = normalizedPem.indexOf(headerMatch.end);
+	const base64Body = normalizedPem.slice(beginIndex, endIndex).replaceAll('\n', '').trim();
+	return base64Body || null;
+}
+
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+	const binary = atob(base64);
+	const bytes = new Uint8Array(binary.length);
+	for (let index = 0; index < binary.length; index += 1) {
+		bytes[index] = binary.charCodeAt(index);
+	}
+	return bytes.buffer;
+}
+
+async function deriveModulusFromPem(normalizedPem: string): Promise<string> {
+	const base64Body = extractPemBodyBase64(normalizedPem);
+	if (!base64Body) {
+		return '';
+	}
+
+	const spkiBuffer = base64ToArrayBuffer(base64Body);
+	const algorithms: RsaHashedImportParams[] = [
+		{ name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+		{ name: 'RSA-PSS', hash: 'SHA-256' },
+		{ name: 'RSA-OAEP', hash: 'SHA-256' }
+	];
+
+	for (const algorithm of algorithms) {
+		try {
+			const key = await crypto.subtle.importKey('spki', spkiBuffer, algorithm, true, ['verify']);
+			const jwk = await crypto.subtle.exportKey('jwk', key);
+			if (jwk.kty === 'RSA' && typeof jwk.n === 'string') {
+				return jwk.n;
+			}
+		} catch {
+			// Try next algorithm profile.
+		}
+	}
+
+	return '';
+}
+
+async function updateDerivedModulusClaim(): Promise<void> {
+	if (sourceUrlRadio.checked) {
+		return;
+	}
+
+	const requestId = ++modulusDerivationRequestId;
+	const validation = validateManualPemInput(keyDataTextarea.value);
+	if (!validation.valid) {
+		currentClaims.n = '';
+		const modulusInput = claimsFields.querySelector('input[data-claim-key="n"]') as HTMLInputElement | null;
+		if (modulusInput) {
+			modulusInput.value = '';
+		}
+		renderModulusHint('Managed by the Public Key PEM field and shown here when the PEM is valid RSA.');
+		return;
+	}
+
+	const derivedModulus = await deriveModulusFromPem(validation.normalized);
+	if (requestId !== modulusDerivationRequestId) {
+		return;
+	}
+
+	currentClaims.n = derivedModulus;
+	const modulusInput = claimsFields.querySelector('input[data-claim-key="n"]') as HTMLInputElement | null;
+	if (modulusInput) {
+		modulusInput.value = derivedModulus;
+	}
+
+	if (derivedModulus) {
+		renderModulusHint('Derived Base64URL modulus (n) from the current PEM.');
+	} else {
+		renderModulusHint('Unable to derive RSA modulus from the current PEM.');
+	}
+}
+
+function validateManualClaims(claims: Record<string, unknown>): { valid: boolean; error?: string } {
+	const exponentValue = typeof claims.e === 'string' ? claims.e.trim() : '';
+	const hintState = getExponentHint(exponentValue);
+	if (!hintState.valid) {
+		return { valid: false, error: hintState.message };
+	}
+	return { valid: true };
+}
 
 // Safe initial UI state until extension sends createMode/keyData.
 refreshBtn.style.display = 'none';
@@ -83,6 +285,9 @@ rawJsonSection.style.display = 'none';
 // Event Listeners
 sourceUrlRadio.addEventListener('change', updateFormBasedOnSource);
 sourceManualRadio.addEventListener('change', updateFormBasedOnSource);
+keyDataTextarea.addEventListener('input', () => {
+	void updateDerivedModulusClaim();
+});
 
 claimsFields.addEventListener('input', (event) => {
 	const target = event.target as HTMLInputElement;
@@ -90,6 +295,9 @@ claimsFields.addEventListener('input', (event) => {
 		return;
 	}
 	currentClaims[target.dataset.claimKey] = target.value;
+	if (target.dataset.claimKey === 'e') {
+		renderExponentHint(target);
+	}
 });
 
 saveBtn.addEventListener('click', () => {
@@ -188,24 +396,15 @@ function updateFormBasedOnSource(): void {
 		keyDataTextarea.placeholder = 'Paste PEM-encoded public key here';
 		publicKeySection.style.display = 'block';
 		manualMetadataSection.style.display = 'block';
-		if (typeof currentClaims.alg !== 'string' || !currentClaims.alg) {
-			currentClaims.alg = 'RS256';
-		}
-		if (typeof currentClaims.kty !== 'string' || !currentClaims.kty) {
-			currentClaims.kty = 'RSA';
-		}
-		if (typeof currentClaims.typ !== 'string' || !currentClaims.typ) {
-			currentClaims.typ = 'JWT';
-		}
-		if (typeof currentClaims.kid !== 'string' || !currentClaims.kid) {
-			currentClaims.kid = 'key1';
-		}
+		ensureManualClaimDefaults(currentClaims);
 		renderClaims(currentClaims, false);
+		void updateDerivedModulusClaim();
 	}
 }
 
 function handleCreateKey(): void {
 	const name = keyNameInput.value.trim();
+	ensureManualClaimDefaults(currentClaims);
 	const algorithm = (typeof currentClaims.alg === 'string' && currentClaims.alg.trim()) ? currentClaims.alg.trim() : 'RS256';
 	const keyType = (typeof currentClaims.kty === 'string' && currentClaims.kty.trim()) ? currentClaims.kty.trim() : 'RSA';
 	
@@ -236,19 +435,27 @@ function handleCreateKey(): void {
 			showError(validation.error || 'Invalid public key');
 			return;
 		}
+
+		const claimsValidation = validateManualClaims(currentClaims);
+		if (!claimsValidation.valid) {
+			showError(claimsValidation.error || 'Invalid manual key claims');
+			return;
+		}
 		
 		vscodeApi.postMessage({
 			type: 'createManualKey',
 			name,
 			keyData: validation.normalized,
 			algorithm,
-			keyType
+			keyType,
+			claims: currentClaims
 		});
 	}
 }
 
 function handleUpdateKey(): void {
 	const name = keyNameInput.value.trim();
+	ensureManualClaimDefaults(currentClaims);
 	const algorithm = (typeof currentClaims.alg === 'string' && currentClaims.alg.trim()) ? currentClaims.alg.trim() : 'RS256';
 	const keyType = (typeof currentClaims.kty === 'string' && currentClaims.kty.trim()) ? currentClaims.kty.trim() : 'RSA';
 
@@ -264,12 +471,19 @@ function handleUpdateKey(): void {
 			return;
 		}
 
+		const claimsValidation = validateManualClaims(currentClaims);
+		if (!claimsValidation.valid) {
+			showError(claimsValidation.error || 'Invalid manual key claims');
+			return;
+		}
+
 		vscodeApi.postMessage({
 			type: 'updateKey',
 			name,
 			keyData: validation.normalized,
 			algorithm,
-			keyType
+			keyType,
+			claims: currentClaims
 		});
 		return;
 	}
@@ -304,12 +518,7 @@ function enterCreateMode(): void {
 	isCreateMode = true;
 	currentKey = null;
 	isUrlKey = false;
-	currentClaims = {
-		alg: 'RS256',
-		kty: 'RSA',
-		typ: 'JWT',
-		kid: 'key1'
-	};
+	currentClaims = { ...DEFAULT_MANUAL_CLAIMS };
 	
 	// Update title and UI for create mode
 	keyTitle.textContent = 'Add New Validation Key';
@@ -341,6 +550,7 @@ function enterCreateMode(): void {
 	sourceManualRadio.checked = true;
 	sourceUrlRadio.checked = false;
 	renderClaims(currentClaims, false);
+	void updateDerivedModulusClaim();
 	
 	// Initialize form state
 	updateFormBasedOnSource();
@@ -356,10 +566,11 @@ function renderClaims(claims: Record<string, unknown> | undefined, readOnly: boo
 		const commonName = CLAIM_NAME_DICTIONARY[key] || key.toUpperCase();
 		const label = `${commonName} (${key})`;
 		let displayValue = '';
-		let editable = !readOnly && MANUAL_EDITABLE_CLAIMS.has(key);
+		let editable = !readOnly && !NON_EDITABLE_MANUAL_CLAIMS.has(key);
 		if (key === 'key') {
 			displayValue = '(shown in Public Key section)';
-			editable = false;
+		} else if (key === 'n') {
+			displayValue = typeof value === 'string' ? value : '';
 		} else if (typeof value === 'string') {
 			displayValue = value;
 		} else {
@@ -368,13 +579,26 @@ function renderClaims(claims: Record<string, unknown> | undefined, readOnly: boo
 		}
 
 		const valueHtml = `<input class="input" data-claim-key="${escapeHtml(key)}" value="${escapeHtml(displayValue)}" ${editable ? '' : 'disabled'} />`;
+		const helpHtml = key === 'e'
+			? '<div class="claim-hint">AQAB is Base64URL for exponent 65537 (common RSA public exponent).</div>'
+			: key === 'n'
+				? '<div class="claim-hint">Managed by the Public Key PEM field and shown here as read-only.</div>'
+				: '';
 		return `
 			<div class="metadata-item">
 				<span class="metadata-label">${escapeHtml(label)}:</span>
 				${valueHtml}
+				${helpHtml}
 			</div>
 		`;
 	}).join('');
+
+	if (!readOnly) {
+		const exponentInput = claimsFields.querySelector('input[data-claim-key="e"]') as HTMLInputElement | null;
+		if (exponentInput) {
+			renderExponentHint(exponentInput);
+		}
+	}
 }
 
 function escapeHtml(value: string): string {
@@ -464,19 +688,9 @@ function loadKeyData(key: any): void {
 	} else {
 		keyNameInput.disabled = false;
 		keyDataTextarea.disabled = false;
-		if (typeof currentClaims.alg !== 'string' || !currentClaims.alg) {
-			currentClaims.alg = 'RS256';
-		}
-		if (typeof currentClaims.kty !== 'string' || !currentClaims.kty) {
-			currentClaims.kty = 'RSA';
-		}
-		if (typeof currentClaims.typ !== 'string' || !currentClaims.typ) {
-			currentClaims.typ = 'JWT';
-		}
-		if (typeof currentClaims.kid !== 'string' || !currentClaims.kid) {
-			currentClaims.kid = 'key1';
-		}
+		ensureManualClaimDefaults(currentClaims);
 		renderClaims(currentClaims, false);
+		void updateDerivedModulusClaim();
 		saveBtn.style.display = 'inline-block';
 		saveBtn.textContent = 'Save Changes';
 		refreshBtn.style.display = 'none';

@@ -62,11 +62,11 @@ export class KeyDetailsPanel {
 						await this.loadKeyData();
 					}
 				} else if (message.type === 'createManualKey') {
-					await this.handleCreateManualKey(message.name, message.keyData, message.algorithm, message.keyType);
+					await this.handleCreateManualKey(message.name, message.keyData, message.algorithm, message.keyType, message.claims);
 				} else if (message.type === 'createURLKey') {
 					await this.handleCreateURLKey(message.name, message.url, message.refreshPeriod);
 				} else if (message.type === 'updateKey') {
-					await this.handleUpdateKey(message.name, message.keyData, message.algorithm, message.refreshPeriod, message.keyType);
+					await this.handleUpdateKey(message.name, message.keyData, message.algorithm, message.refreshPeriod, message.keyType, message.claims);
 				} else if (message.type === 'deleteKey') {
 					await this.handleDeleteKey(message.id);
 				} else if (message.type === 'refreshKey') {
@@ -145,8 +145,8 @@ export class KeyDetailsPanel {
 		});
 	}
 
-	private async handleCreateManualKey(name: string, keyData: string, algorithm: string, keyType?: string): Promise<void> {
-		const result = await this._keyManager.addManualKey(name, keyData, algorithm || 'RS256', keyType || 'RSA');
+	private async handleCreateManualKey(name: string, keyData: string, algorithm: string, keyType?: string, claims?: Record<string, unknown>): Promise<void> {
+		const result = await this._keyManager.addManualKey(name, keyData, algorithm || 'RS256', keyType || 'RSA', claims);
 		if (result.success) {
 			vscode.window.showInformationMessage(`Key "${name}" added successfully`);
 			await this._onKeyChanged();
@@ -174,7 +174,7 @@ export class KeyDetailsPanel {
 		});
 	}
 
-	private async handleUpdateKey(name: string, keyData: string, algorithm: string, refreshPeriod?: string, keyType?: string): Promise<void> {
+	private async handleUpdateKey(name: string, keyData: string, algorithm: string, refreshPeriod?: string, keyType?: string, claims?: Record<string, unknown>): Promise<void> {
 		if (!this._keyId) {
 			return;
 		}
@@ -186,7 +186,7 @@ export class KeyDetailsPanel {
 
 		const result = isURLKey(key)
 			? await this._keyManager.updateURLKeySettings(this._keyId, name, (refreshPeriod as RefreshPeriod) || key.refreshPeriod)
-			: await this._keyManager.updateManualKey(this._keyId, name, keyData, algorithm || 'RS256', keyType || 'RSA');
+			: await this._keyManager.updateManualKey(this._keyId, name, keyData, algorithm || 'RS256', keyType || 'RSA', claims);
 		if (result.success) {
 			vscode.window.showInformationMessage(isURLKey(key) ? 'URL key updated successfully' : 'Key updated successfully');
 			await this._onKeyChanged();

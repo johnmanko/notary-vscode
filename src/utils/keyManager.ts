@@ -108,6 +108,48 @@ function tryDecodeNClaim(jwk: Record<string, unknown>): string {
 	}
 }
 
+function sanitizeClaim(value: unknown, fallback: string): string {
+	if (typeof value !== 'string') {
+		return fallback;
+	}
+	const trimmed = value.trim();
+	return trimmed || fallback;
+}
+
+function isBase64Url(value: string): boolean {
+	return /^[A-Za-z0-9_-]+$/.test(value);
+}
+
+function normalizeManualClaims(
+	algorithm: string,
+	keyType: string,
+	claims?: Record<string, unknown>
+): Record<string, string> {
+	const source = claims ?? {};
+	return {
+		kty: sanitizeClaim(source.kty, keyType),
+		n: sanitizeClaim(source.n, ''),
+		e: sanitizeClaim(source.e, 'AQAB'),
+		use: sanitizeClaim(source.use, 'sig'),
+		alg: sanitizeClaim(source.alg, algorithm),
+		kid: sanitizeClaim(source.kid, 'key1'),
+		typ: sanitizeClaim(source.typ, 'JWT')
+	};
+}
+
+function validateManualClaims(claims: Record<string, string>): { valid: boolean; error?: string } {
+	if (!claims.e) {
+		return { valid: false, error: 'Exponent (e) is required and must be Base64URL encoded.' };
+	}
+	if (!isBase64Url(claims.e)) {
+		return { valid: false, error: 'Exponent (e) must be Base64URL encoded (characters A-Z, a-z, 0-9, -, _).' };
+	}
+	if (claims.n && !isBase64Url(claims.n)) {
+		return { valid: false, error: 'Modulus (n) must be Base64URL encoded when present.' };
+	}
+	return { valid: true };
+}
+
 /**
  * Key Manager
  * Coordinates key storage, fetching, and refresh logic
@@ -136,7 +178,7 @@ export class KeyManager {
 	/**
 	 * Add a new manual validation key
 	 */
-	async addManualKey(name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA'): Promise<KeyOperationResult> {
+	async addManualKey(name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>): Promise<KeyOperationResult> {
 		try {
 			// Validate input
 			if (!name || name.trim().length === 0) {
@@ -152,8 +194,21 @@ export class KeyManager {
 				return { success: false, error: pemValidation.error || 'Invalid public key format' };
 			}
 
+			const normalizedAlgorithm = algorithm.trim() || 'RS256';
 			const normalizedKeyType = keyType.trim().toUpperCase() || 'RSA';
-			const key = await this.storageManager.addManualKey(name.trim(), pemValidation.normalized, algorithm.trim() || 'RS256', normalizedKeyType);
+			const normalizedClaims = normalizeManualClaims(normalizedAlgorithm, normalizedKeyType, claims);
+			const claimsValidation = validateManualClaims(normalizedClaims);
+			if (!claimsValidation.valid) {
+				return { success: false, error: claimsValidation.error || 'Invalid manual key claims' };
+			}
+
+			const key = await this.storageManager.addManualKey(
+				name.trim(),
+				pemValidation.normalized,
+				normalizedAlgorithm,
+				normalizedKeyType,
+				normalizedClaims
+			);
 			return { success: true, key };
 
 		} catch (error) {
@@ -303,15 +358,33 @@ export class KeyManager {
 	/**
 	 * Update a manual validation key
 	 */
-	async updateManualKey(id: string, name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA'): Promise<{ success: boolean; error?: string }> {
+	async updateManualKey(id: string, name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>): Promise<{ success: boolean; error?: string }> {
 		try {
+			if (!name || name.trim().length === 0) {
+				return { success: false, error: 'Key name is required' };
+			}
+
 			const pemValidation = validateManualPemInput(publicKey);
 			if (!pemValidation.valid) {
 				return { success: false, error: pemValidation.error || 'Invalid public key format' };
 			}
 
+			const normalizedAlgorithm = algorithm.trim() || 'RS256';
 			const normalizedKeyType = keyType.trim().toUpperCase() || 'RSA';
-			const result = await this.storageManager.updateManualKey(id, name, pemValidation.normalized, algorithm, normalizedKeyType);
+			const normalizedClaims = normalizeManualClaims(normalizedAlgorithm, normalizedKeyType, claims);
+			const claimsValidation = validateManualClaims(normalizedClaims);
+			if (!claimsValidation.valid) {
+				return { success: false, error: claimsValidation.error || 'Invalid manual key claims' };
+			}
+
+			const result = await this.storageManager.updateManualKey(
+				id,
+				name.trim(),
+				pemValidation.normalized,
+				normalizedAlgorithm,
+				normalizedKeyType,
+				normalizedClaims
+			);
 			if (!result) {
 				return { success: false, error: 'Key not found or cannot be updated' };
 			}
