@@ -10,7 +10,7 @@
  */
 import * as vscode from 'vscode';
 import * as crypto from 'node:crypto';
-import { ValidationKey, isURLKey, needsRefresh, RefreshPeriod } from '../types/keyManagement';
+import { ValidationKey, isURLKey, isJWKSJsonKey, needsRefresh, RefreshPeriod } from '../types/keyManagement';
 import { KeyStorageManager } from './keyStorage';
 import { fetchOIDCKeys } from './oidcKeyFetcher';
 
@@ -30,6 +30,18 @@ export interface KeyEditorData {
 	algorithm?: string;
 	typ?: string;
 	kid?: string;
+	preferredKeyRef?: string;
+	availableKeyOptions?: Array<{ ref: string; label: string }>;
+}
+
+export interface ValidationKeyMaterial {
+	publicKey: string;
+	selectedKeyRef: string;
+	selectedKid?: string;
+	algorithm?: string;
+	typ?: string;
+	selectionReason?: 'kid-match' | 'preferred' | 'single-key' | 'override';
+	availableKeyOptions: Array<{ ref: string; label: string }>;
 }
 
 function normalizePemInput(value: string): string {
@@ -86,6 +98,86 @@ function parseStoredJson(decoded: string): Record<string, unknown> | null {
 	} catch {
 		return null;
 	}
+}
+
+interface KeySetModel {
+	keys: Record<string, unknown>[];
+	preferredKeyRef?: string;
+}
+
+function normalizePreferredKeyRef(value: unknown): string | undefined {
+	if (typeof value !== 'string') {
+		return undefined;
+	}
+	const trimmed = value.trim();
+	return trimmed || undefined;
+}
+
+function parseKeySetModel(decoded: string, fallbackPreferredKeyRef?: string): KeySetModel | null {
+	const parsed = parseStoredJson(decoded);
+	if (!parsed) {
+		return null;
+	}
+
+	if (Array.isArray(parsed.keys)) {
+		return {
+			keys: parsed.keys.filter(isJwkObject),
+			preferredKeyRef: normalizePreferredKeyRef(fallbackPreferredKeyRef) || normalizePreferredKeyRef(parsed.preferredKeyRef)
+		};
+	}
+
+	return {
+		keys: [parsed],
+		preferredKeyRef: normalizePreferredKeyRef(fallbackPreferredKeyRef)
+	};
+}
+
+function getKeyRef(jwk: Record<string, unknown>, index: number): string {
+	if (typeof jwk.kid === 'string' && jwk.kid.trim()) {
+		return `kid:${jwk.kid.trim()}`;
+	}
+	return `index:${index}`;
+}
+
+function getKeyOptionLabel(jwk: Record<string, unknown>, index: number): string {
+	const kid = typeof jwk.kid === 'string' && jwk.kid.trim() ? jwk.kid.trim() : '(none)';
+	const kty = typeof jwk.kty === 'string' && jwk.kty.trim() ? jwk.kty.trim() : '(unknown)';
+	const alg = typeof jwk.alg === 'string' && jwk.alg.trim() ? jwk.alg.trim() : '(unspecified)';
+	return `keys[${index}] kty=${kty}, kid=${kid}, alg=${alg}`;
+}
+
+function getKeyOptions(keys: Record<string, unknown>[]): Array<{ ref: string; label: string }> {
+	return keys.map((jwk, index) => ({
+		ref: getKeyRef(jwk, index),
+		label: getKeyOptionLabel(jwk, index)
+	}));
+}
+
+function resolveKeyByKid(keys: Record<string, unknown>[], kid?: string): { key: Record<string, unknown>; index: number } | null {
+	if (!kid) {
+		return null;
+	}
+	const matchIndex = keys.findIndex(jwk => typeof jwk.kid === 'string' && jwk.kid === kid);
+	if (matchIndex === -1) {
+		return null;
+	}
+	return { key: keys[matchIndex], index: matchIndex };
+}
+
+function resolveKeyByRef(keys: Record<string, unknown>[], preferredRef?: string): { key: Record<string, unknown>; index: number } | null {
+	if (!preferredRef) {
+		return null;
+	}
+	if (preferredRef.startsWith('kid:')) {
+		return resolveKeyByKid(keys, preferredRef.slice(4));
+	}
+	if (preferredRef.startsWith('index:')) {
+		const index = Number.parseInt(preferredRef.slice(6), 10);
+		if (!Number.isNaN(index) && index >= 0 && index < keys.length) {
+			return { key: keys[index], index };
+		}
+	}
+	return null;
 }
 
 function decodeBase64UrlToBuffer(value: string): Buffer {
@@ -150,6 +242,60 @@ function validateManualClaims(claims: Record<string, string>): { valid: boolean;
 	return { valid: true };
 }
 
+function normalizeDescription(description?: string): { valid: boolean; value?: string; error?: string } {
+	if (description === undefined) {
+		return { valid: true, value: undefined };
+	}
+	const normalized = description.trim();
+	if (normalized.length > 50) {
+		return { valid: false, error: 'Description must be 50 characters or fewer.' };
+	}
+	return { valid: true, value: normalized };
+}
+
+function isJwkObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function selectBestJwk(keys: Record<string, unknown>[]): Record<string, unknown> | undefined {
+	if (keys.length === 0) {
+		return undefined;
+	}
+	const sigKey = keys.find(key => key.use === 'sig');
+	return sigKey ?? keys[0];
+}
+
+function parseJWKSJsonInput(jwksJson: string): { success: boolean; selectedJwk?: Record<string, unknown>; jwkObjects?: Record<string, unknown>[]; normalizedJWKS?: string; error?: string } {
+	const trimmed = jwksJson.trim();
+	if (!trimmed) {
+		return { success: false, error: 'JWKS JSON is required' };
+	}
+
+	try {
+		const parsed = JSON.parse(trimmed);
+		if (!isJwkObject(parsed)) {
+			return { success: false, error: 'Invalid JWKS format: root must be a JSON object' };
+		}
+		const keysValue = parsed.keys;
+		if (!Array.isArray(keysValue)) {
+			return { success: false, error: 'Invalid JWKS format: missing keys array' };
+		}
+		const jwkObjects = keysValue.filter(isJwkObject);
+		const selected = selectBestJwk(jwkObjects);
+		if (!selected) {
+			return { success: false, error: 'No suitable keys found in JWKS' };
+		}
+		return {
+			success: true,
+			selectedJwk: selected,
+			jwkObjects,
+			normalizedJWKS: JSON.stringify(parsed)
+		};
+	} catch {
+		return { success: false, error: 'Invalid JSON format for JWKS input' };
+	}
+}
+
 /**
  * Key Manager
  * Coordinates key storage, fetching, and refresh logic
@@ -178,7 +324,7 @@ export class KeyManager {
 	/**
 	 * Add a new manual validation key
 	 */
-	async addManualKey(name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>): Promise<KeyOperationResult> {
+	async addManualKey(name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, description?: string): Promise<KeyOperationResult> {
 		try {
 			// Validate input
 			if (!name || name.trim().length === 0) {
@@ -187,6 +333,11 @@ export class KeyManager {
 
 			if (!publicKey || publicKey.trim().length === 0) {
 				return { success: false, error: 'Public key is required' };
+			}
+
+			const descriptionResult = normalizeDescription(description);
+			if (!descriptionResult.valid) {
+				return { success: false, error: descriptionResult.error };
 			}
 
 			const pemValidation = validateManualPemInput(publicKey);
@@ -201,13 +352,18 @@ export class KeyManager {
 			if (!claimsValidation.valid) {
 				return { success: false, error: claimsValidation.error || 'Invalid manual key claims' };
 			}
+			const preferredRef = typeof normalizedClaims.kid === 'string' && normalizedClaims.kid.trim()
+				? `kid:${normalizedClaims.kid.trim()}`
+				: 'index:0';
 
 			const key = await this.storageManager.addManualKey(
 				name.trim(),
 				pemValidation.normalized,
 				normalizedAlgorithm,
 				normalizedKeyType,
-				normalizedClaims
+				normalizedClaims,
+				preferredRef,
+				descriptionResult.value
 			);
 			return { success: true, key };
 
@@ -226,7 +382,8 @@ export class KeyManager {
 	async addURLKey(
 		name: string,
 		url: string,
-		refreshPeriod: RefreshPeriod
+		refreshPeriod: RefreshPeriod,
+		description?: string
 	): Promise<KeyOperationResult> {
 		try {
 			// Validate input
@@ -238,21 +395,36 @@ export class KeyManager {
 				return { success: false, error: 'URL is required' };
 			}
 
+			const descriptionResult = normalizeDescription(description);
+			if (!descriptionResult.valid) {
+				return { success: false, error: descriptionResult.error };
+			}
+
 			// Fetch the key from the URL
 			const fetchResult = await fetchOIDCKeys(url.trim());
-			if (!fetchResult.success || !fetchResult.publicKey) {
+			if (!fetchResult.success || !fetchResult.jwks) {
 				return {
 					success: false,
 					error: fetchResult.error || 'Failed to fetch key from URL'
 				};
 			}
 
+			const jwkObjects = fetchResult.jwks.keys.filter(isJwkObject);
+			if (jwkObjects.length === 0) {
+				return { success: false, error: 'No suitable keys found in JWKS' };
+			}
+			const preferredSigIndex = jwkObjects.findIndex(key => key.use === 'sig');
+			const preferredIndex = preferredSigIndex >= 0 ? preferredSigIndex : 0;
+			const preferredRef = getKeyRef(jwkObjects[preferredIndex], preferredIndex);
+
 			// Store the key
 			const key = await this.storageManager.addURLKey(
 				name.trim(),
 				url.trim(),
 				refreshPeriod,
-				fetchResult.publicKey
+				jwkObjects,
+				preferredRef,
+				descriptionResult.value
 			);
 
 			return { success: true, key };
@@ -261,6 +433,101 @@ export class KeyManager {
 			return {
 				success: false,
 				error: error instanceof Error ? error.message : 'Failed to add URL key'
+			};
+		}
+	}
+
+	/**
+	 * Add a new direct JWKS JSON validation key
+	 */
+	async addJWKSJsonKey(name: string, jwksJson: string, description?: string): Promise<KeyOperationResult> {
+		try {
+			if (!name || name.trim().length === 0) {
+				return { success: false, error: 'Key name is required' };
+			}
+
+			const descriptionResult = normalizeDescription(description);
+			if (!descriptionResult.valid) {
+				return { success: false, error: descriptionResult.error };
+			}
+
+			const parsedResult = parseJWKSJsonInput(jwksJson);
+			if (!parsedResult.success || !parsedResult.selectedJwk || !parsedResult.normalizedJWKS) {
+				return { success: false, error: parsedResult.error || 'Invalid JWKS JSON input' };
+			}
+
+			const jwkObjects = parsedResult.jwkObjects || [];
+			if (jwkObjects.length === 0) {
+				return { success: false, error: 'No suitable keys found in JWKS' };
+			}
+			const selectedIndex = jwkObjects.findIndex((candidate: Record<string, unknown>) => candidate === parsedResult.selectedJwk);
+			const resolvedIndex = selectedIndex >= 0 ? selectedIndex : 0;
+			const preferredRef = getKeyRef(jwkObjects[resolvedIndex], resolvedIndex);
+
+			const key = await this.storageManager.addJWKSJsonKey(
+				name.trim(),
+				parsedResult.normalizedJWKS,
+				jwkObjects,
+				preferredRef,
+				descriptionResult.value
+			);
+
+			return { success: true, key };
+		} catch (error) {
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : 'Failed to add JWKS JSON key'
+			};
+		}
+	}
+
+	async updateJWKSJsonKey(id: string, name: string, jwksJson: string, description?: string): Promise<{ success: boolean; error?: string }> {
+		try {
+			if (!name || name.trim().length === 0) {
+				return { success: false, error: 'Key name is required' };
+			}
+
+			const descriptionResult = normalizeDescription(description);
+			if (!descriptionResult.valid) {
+				return { success: false, error: descriptionResult.error };
+			}
+
+			const key = await this.storageManager.getKeyById(id);
+			if (!key) {
+				return { success: false, error: 'Key not found' };
+			}
+			if (!isJWKSJsonKey(key)) {
+				return { success: false, error: 'Cannot update JWKS JSON data for a non-JWKS key' };
+			}
+
+			const parsedResult = parseJWKSJsonInput(jwksJson);
+			if (!parsedResult.success || !parsedResult.jwkObjects || !parsedResult.normalizedJWKS) {
+				return { success: false, error: parsedResult.error || 'Invalid JWKS JSON input' };
+			}
+
+			const preferredMatch = resolveKeyByRef(parsedResult.jwkObjects, key.preferredKeyRef);
+			const preferredSigIndex = parsedResult.jwkObjects.findIndex(candidate => candidate.use === 'sig');
+			const preferredIndex = preferredMatch?.index ?? (preferredSigIndex >= 0 ? preferredSigIndex : 0);
+			const preferredRef = getKeyRef(parsedResult.jwkObjects[preferredIndex], preferredIndex);
+
+			const updated = await this.storageManager.updateJWKSJsonKey(
+				id,
+				name.trim(),
+				parsedResult.normalizedJWKS,
+				parsedResult.jwkObjects,
+				preferredRef,
+				descriptionResult.value
+			);
+
+			if (!updated) {
+				return { success: false, error: 'Key not found or cannot be updated' };
+			}
+
+			return { success: true };
+		} catch (error) {
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : 'Failed to update JWKS JSON key'
 			};
 		}
 	}
@@ -282,15 +549,24 @@ export class KeyManager {
 
 			// Fetch updated key
 			const fetchResult = await fetchOIDCKeys(key.url);
-			if (!fetchResult.success || !fetchResult.publicKey) {
+			if (!fetchResult.success || !fetchResult.jwks) {
 				return {
 					success: false,
 					error: fetchResult.error || 'Failed to fetch key from URL'
 				};
 			}
 
+			const jwkObjects = fetchResult.jwks.keys.filter(isJwkObject);
+			if (jwkObjects.length === 0) {
+				return { success: false, error: 'No suitable keys found in JWKS' };
+			}
+			const preferredMatch = resolveKeyByRef(jwkObjects, key.preferredKeyRef);
+			const preferredSigIndex = jwkObjects.findIndex(candidate => candidate.use === 'sig');
+			const preferredIndex = preferredMatch?.index ?? (preferredSigIndex >= 0 ? preferredSigIndex : 0);
+			const preferredRef = getKeyRef(jwkObjects[preferredIndex], preferredIndex);
+
 			// Update the stored key
-			const updatedKey = await this.storageManager.updateURLKey(id, fetchResult.publicKey);
+			const updatedKey = await this.storageManager.updateURLKey(id, jwkObjects, preferredRef);
 			if (!updatedKey) {
 				return { success: false, error: 'Failed to update key' };
 			}
@@ -358,10 +634,15 @@ export class KeyManager {
 	/**
 	 * Update a manual validation key
 	 */
-	async updateManualKey(id: string, name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>): Promise<{ success: boolean; error?: string }> {
+	async updateManualKey(id: string, name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, preferredKeyRef?: string, description?: string): Promise<{ success: boolean; error?: string }> {
 		try {
 			if (!name || name.trim().length === 0) {
 				return { success: false, error: 'Key name is required' };
+			}
+
+			const descriptionResult = normalizeDescription(description);
+			if (!descriptionResult.valid) {
+				return { success: false, error: descriptionResult.error };
 			}
 
 			const pemValidation = validateManualPemInput(publicKey);
@@ -376,6 +657,9 @@ export class KeyManager {
 			if (!claimsValidation.valid) {
 				return { success: false, error: claimsValidation.error || 'Invalid manual key claims' };
 			}
+			const fallbackRef = typeof normalizedClaims.kid === 'string' && normalizedClaims.kid.trim()
+				? `kid:${normalizedClaims.kid.trim()}`
+				: 'index:0';
 
 			const result = await this.storageManager.updateManualKey(
 				id,
@@ -383,7 +667,9 @@ export class KeyManager {
 				pemValidation.normalized,
 				normalizedAlgorithm,
 				normalizedKeyType,
-				normalizedClaims
+				normalizedClaims,
+				preferredKeyRef || fallbackRef,
+				descriptionResult.value
 			);
 			if (!result) {
 				return { success: false, error: 'Key not found or cannot be updated' };
@@ -400,13 +686,18 @@ export class KeyManager {
 	/**
 	 * Update only the key name regardless of source type
 	 */
-	async updateKeyName(id: string, name: string): Promise<{ success: boolean; error?: string }> {
+	async updateKeyName(id: string, name: string, description?: string): Promise<{ success: boolean; error?: string }> {
 		try {
 			if (!name || name.trim().length === 0) {
 				return { success: false, error: 'Key name is required' };
 			}
 
-			const result = await this.storageManager.updateKeyName(id, name.trim());
+			const descriptionResult = normalizeDescription(description);
+			if (!descriptionResult.valid) {
+				return { success: false, error: descriptionResult.error };
+			}
+
+			const result = await this.storageManager.updateKeyName(id, name.trim(), descriptionResult.value);
 			if (!result) {
 				return { success: false, error: 'Key not found or cannot be updated' };
 			}
@@ -423,10 +714,15 @@ export class KeyManager {
 	/**
 	 * Update URL key editable settings (name + refresh period)
 	 */
-	async updateURLKeySettings(id: string, name: string, refreshPeriod: RefreshPeriod): Promise<{ success: boolean; error?: string }> {
+	async updateURLKeySettings(id: string, name: string, refreshPeriod: RefreshPeriod, preferredKeyRef?: string, description?: string): Promise<{ success: boolean; error?: string }> {
 		try {
 			if (!name || name.trim().length === 0) {
 				return { success: false, error: 'Key name is required' };
+			}
+
+			const descriptionResult = normalizeDescription(description);
+			if (!descriptionResult.valid) {
+				return { success: false, error: descriptionResult.error };
 			}
 
 			const key = await this.storageManager.getKeyById(id);
@@ -437,7 +733,7 @@ export class KeyManager {
 				return { success: false, error: 'Cannot update URL settings for a manual key' };
 			}
 
-			const result = await this.storageManager.updateURLKeySettings(id, name.trim(), refreshPeriod);
+			const result = await this.storageManager.updateURLKeySettings(id, name.trim(), refreshPeriod, preferredKeyRef, descriptionResult.value);
 			if (!result) {
 				return { success: false, error: 'Key not found or cannot be updated' };
 			}
@@ -451,6 +747,21 @@ export class KeyManager {
 		}
 	}
 
+	async updatePreferredKeyRef(id: string, preferredKeyRef?: string): Promise<{ success: boolean; error?: string }> {
+		try {
+			const result = await this.storageManager.updatePreferredKeyRef(id, preferredKeyRef);
+			if (!result) {
+				return { success: false, error: 'Key not found or cannot be updated' };
+			}
+			return { success: true };
+		} catch (error) {
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : 'Failed to update preferred key selection'
+			};
+		}
+	}
+
 	/**
 	 * Get the decoded public key data
 	 */
@@ -458,64 +769,130 @@ export class KeyManager {
 		return this.storageManager.getDecodedKey(key);
 	}
 
-	getPublicKeyForValidation(key: ValidationKey): string {
+	getValidationMaterial(key: ValidationKey, tokenKid?: string, preferredKeyRefOverride?: string): { success: boolean; data?: ValidationKeyMaterial; error?: string } {
 		const decoded = this.getDecodedKey(key);
-		const parsed = parseStoredJson(decoded);
+		const parsedModel = parseKeySetModel(decoded, key.preferredKeyRef);
 
-		if (!parsed) {
-			return decoded;
+		if (!parsedModel || parsedModel.keys.length === 0) {
+			return { success: false, error: 'No usable keys found in key set' };
 		}
 
-		if (isURLKey(key)) {
-			try {
-				return crypto.createPublicKey({ key: parsed as crypto.JsonWebKey, format: 'jwk' })
-					.export({ type: 'spki', format: 'pem' })
-					.toString();
-			} catch {
-				return decoded;
+		const keyOptions = getKeyOptions(parsedModel.keys);
+		const overrideMatch = resolveKeyByRef(parsedModel.keys, preferredKeyRefOverride);
+		const kidMatch = resolveKeyByKid(parsedModel.keys, tokenKid);
+		const preferredMatch = resolveKeyByRef(parsedModel.keys, parsedModel.preferredKeyRef);
+		const singleKeyFallback = parsedModel.keys.length === 1 ? { key: parsedModel.keys[0], index: 0 } : null;
+		const selected = overrideMatch || kidMatch || preferredMatch || singleKeyFallback;
+		const selectionReason: 'kid-match' | 'preferred' | 'single-key' | 'override' = overrideMatch
+			? 'override'
+			: kidMatch
+				? 'kid-match'
+				: preferredMatch
+					? 'preferred'
+					: 'single-key';
+
+		if (!selected) {
+			return {
+				success: false,
+				error: tokenKid
+					? `No key with kid "${tokenKid}" was found, and no fallback key is selected. Choose a fallback key in Key Details.`
+					: 'JWT did not provide kid and no fallback key is selected. Choose a fallback key in Key Details.'
+			};
+		}
+
+		try {
+			const publicKey = crypto.createPublicKey({ key: selected.key as crypto.JsonWebKey, format: 'jwk' })
+				.export({ type: 'spki', format: 'pem' })
+				.toString();
+
+			return {
+				success: true,
+				data: {
+					publicKey,
+					selectedKeyRef: getKeyRef(selected.key, selected.index),
+					selectedKid: typeof selected.key.kid === 'string' ? selected.key.kid : undefined,
+					algorithm: typeof selected.key.alg === 'string' ? selected.key.alg : undefined,
+					typ: typeof selected.key.typ === 'string' ? selected.key.typ : undefined,
+					selectionReason,
+					availableKeyOptions: keyOptions
+				}
+			};
+		} catch {
+			const embeddedPem = selected.key.key;
+			if (typeof embeddedPem === 'string') {
+				return {
+					success: true,
+					data: {
+						publicKey: embeddedPem,
+						selectedKeyRef: getKeyRef(selected.key, selected.index),
+						selectedKid: typeof selected.key.kid === 'string' ? selected.key.kid : undefined,
+						algorithm: typeof selected.key.alg === 'string' ? selected.key.alg : undefined,
+						typ: typeof selected.key.typ === 'string' ? selected.key.typ : undefined,
+						selectionReason,
+						availableKeyOptions: keyOptions
+					}
+				};
 			}
+			return { success: false, error: 'Selected key is not usable for validation' };
 		}
+	}
 
-		const modelKey = parsed.key;
-		if (typeof modelKey === 'string') {
-			return modelKey;
+	getPublicKeyForValidation(key: ValidationKey): string {
+		const material = this.getValidationMaterial(key);
+		if (!material.success || !material.data) {
+			return this.getDecodedKey(key);
 		}
-
-		return decoded;
+		return material.data.publicKey;
 	}
 
 	getKeyEditorData(key: ValidationKey): KeyEditorData {
 		const decoded = this.getDecodedKey(key);
-		const parsed = parseStoredJson(decoded);
+		const parsedModel = parseKeySetModel(decoded, key.preferredKeyRef);
 
-		if (!parsed) {
+		if (!parsedModel || parsedModel.keys.length === 0) {
 			return {
 				claims: {},
 				decodedKey: decoded,
-				rawJson: isURLKey(key) ? decoded : undefined
+				rawJson: isURLKey(key)
+					? decoded
+					: isJWKSJsonKey(key)
+						? key.rawJwksJson
+						: undefined
 			};
 		}
 
+		const keyOptions = getKeyOptions(parsedModel.keys);
+		const preferredMatch = resolveKeyByRef(parsedModel.keys, parsedModel.preferredKeyRef)
+			|| { key: parsedModel.keys[0], index: 0 };
+		const selectedJwk = preferredMatch.key;
+
 		let decodedKey = '';
-		if (isURLKey(key)) {
+		if (selectedJwk) {
 			try {
-				decodedKey = crypto.createPublicKey({ key: parsed as crypto.JsonWebKey, format: 'jwk' })
+				decodedKey = crypto.createPublicKey({ key: selectedJwk as crypto.JsonWebKey, format: 'jwk' })
 					.export({ type: 'spki', format: 'pem' })
 					.toString();
 			} catch {
-				decodedKey = tryDecodeNClaim(parsed);
+				decodedKey = tryDecodeNClaim(selectedJwk);
+				if (!decodedKey && typeof selectedJwk.key === 'string') {
+					decodedKey = selectedJwk.key;
+				}
 			}
-		} else {
-			decodedKey = typeof parsed.key === 'string' ? parsed.key : '';
 		}
 
 		return {
-			claims: parsed,
-			rawJson: isURLKey(key) ? decoded : undefined,
+			claims: selectedJwk,
+			rawJson: isURLKey(key)
+				? JSON.stringify({ keys: parsedModel.keys })
+				: isJWKSJsonKey(key)
+					? key.rawJwksJson
+					: undefined,
 			decodedKey,
-			algorithm: typeof parsed.alg === 'string' ? parsed.alg : undefined,
-			typ: typeof parsed.typ === 'string' ? parsed.typ : undefined,
-			kid: typeof parsed.kid === 'string' ? parsed.kid : undefined
+			algorithm: typeof selectedJwk.alg === 'string' ? selectedJwk.alg : undefined,
+			typ: typeof selectedJwk.typ === 'string' ? selectedJwk.typ : undefined,
+			kid: typeof selectedJwk.kid === 'string' ? selectedJwk.kid : undefined,
+			preferredKeyRef: parsedModel.preferredKeyRef,
+			availableKeyOptions: keyOptions
 		};
 	}
 

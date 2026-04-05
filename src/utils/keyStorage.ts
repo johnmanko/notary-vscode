@@ -9,7 +9,7 @@
  * SPDX-License-Identifier: GPL-3.0
  */
 import * as vscode from 'vscode';
-import { ValidationKey, URLValidationKey, ManualValidationKey, KeySource, RefreshPeriod, calculateNextRefresh } from '../types/keyManagement';
+import { ValidationKey, URLValidationKey, ManualValidationKey, JWKSJsonValidationKey, KeySource, RefreshPeriod, calculateNextRefresh } from '../types/keyManagement';
 
 const STORAGE_KEY = 'notary.validationKeys';
 
@@ -53,9 +53,31 @@ function sanitizeClaimValue(value: unknown, fallback: string): string {
 	return trimmed || fallback;
 }
 
-function buildManualKeyModel(publicKey: string, algorithm: string, keyType: string, claims?: Record<string, unknown>): string {
+function sanitizePreferredKeyRef(value: unknown): string | undefined {
+	if (typeof value !== 'string') {
+		return undefined;
+	}
+	const trimmed = value.trim();
+	return trimmed || undefined;
+}
+
+function sanitizeDescription(value: unknown): string {
+	if (typeof value !== 'string') {
+		return '';
+	}
+	return value.trim().slice(0, 50);
+}
+
+function buildKeySetModel(keys: Record<string, unknown>[], preferredKeyRef?: string): string {
+	return JSON.stringify({
+		keys,
+		preferredKeyRef
+	});
+}
+
+function buildManualKeyModel(publicKey: string, algorithm: string, keyType: string, claims?: Record<string, unknown>, preferredKeyRef?: string): string {
 	const normalizedClaims = claims ? { ...claims } : {};
-	const model = {
+	const modelKey = {
 		kty: sanitizeClaimValue(normalizedClaims.kty, keyType),
 		n: sanitizeClaimValue(normalizedClaims.n, ''),
 		e: sanitizeClaimValue(normalizedClaims.e, 'AQAB'),
@@ -65,7 +87,10 @@ function buildManualKeyModel(publicKey: string, algorithm: string, keyType: stri
 		typ: sanitizeClaimValue(normalizedClaims.typ, 'JWT'),
 		key: normalizePemInput(publicKey)
 	};
-	return JSON.stringify(model);
+	const fallbackRef = typeof modelKey.kid === 'string' && modelKey.kid.trim()
+		? `kid:${modelKey.kid}`
+		: 'index:0';
+	return buildKeySetModel([modelKey], sanitizePreferredKeyRef(preferredKeyRef) || fallbackRef);
 }
 
 /**
@@ -94,12 +119,14 @@ export class KeyStorageManager {
 	/**
 	 * Add a new manual validation key
 	 */
-	async addManualKey(name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>): Promise<ManualValidationKey> {
+	async addManualKey(name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, preferredKeyRef?: string, description?: string): Promise<ManualValidationKey> {
 		const key: ManualValidationKey = {
 			id: generateKeyId(),
 			name,
+			description: sanitizeDescription(description),
 			source: KeySource.Manual,
-			keyData: encodeToBase64(buildManualKeyModel(publicKey, algorithm, keyType, claims)),
+			preferredKeyRef: sanitizePreferredKeyRef(preferredKeyRef),
+			keyData: encodeToBase64(buildManualKeyModel(publicKey, algorithm, keyType, claims, preferredKeyRef)),
 			createdAt: Date.now()
 		};
 
@@ -117,16 +144,20 @@ export class KeyStorageManager {
 		name: string,
 		url: string,
 		refreshPeriod: RefreshPeriod,
-		publicKey: string
+		jwksKeys: Record<string, unknown>[],
+		preferredKeyRef?: string,
+		description?: string
 	): Promise<URLValidationKey> {
 		const now = Date.now();
 		const key: URLValidationKey = {
 			id: generateKeyId(),
 			name,
+			description: sanitizeDescription(description),
 			source: KeySource.URL,
 			url,
 			refreshPeriod,
-			keyData: encodeToBase64(publicKey),
+			preferredKeyRef: sanitizePreferredKeyRef(preferredKeyRef),
+			keyData: encodeToBase64(buildKeySetModel(jwksKeys, sanitizePreferredKeyRef(preferredKeyRef))),
 			createdAt: now,
 			lastFetchedAt: now,
 			nextRefreshAt: calculateNextRefresh(refreshPeriod, now)
@@ -140,9 +171,31 @@ export class KeyStorageManager {
 	}
 
 	/**
+	 * Add a new direct JWKS JSON validation key
+	 */
+	async addJWKSJsonKey(name: string, rawJwksJson: string, jwksKeys: Record<string, unknown>[], preferredKeyRef?: string, description?: string): Promise<JWKSJsonValidationKey> {
+		const key: JWKSJsonValidationKey = {
+			id: generateKeyId(),
+			name,
+			description: sanitizeDescription(description),
+			source: KeySource.JWKSJson,
+			rawJwksJson,
+			preferredKeyRef: sanitizePreferredKeyRef(preferredKeyRef),
+			keyData: encodeToBase64(buildKeySetModel(jwksKeys, sanitizePreferredKeyRef(preferredKeyRef))),
+			createdAt: Date.now()
+		};
+
+		const keys = await this.getKeys();
+		keys.push(key);
+		await this.context.globalState.update(STORAGE_KEY, keys);
+
+		return key;
+	}
+
+	/**
 	 * Update an existing URL-based key with new key data
 	 */
-	async updateURLKey(id: string, publicKey: string): Promise<URLValidationKey | undefined> {
+	async updateURLKey(id: string, jwksKeys: Record<string, unknown>[], preferredKeyRef?: string): Promise<URLValidationKey | undefined> {
 		const keys = await this.getKeys();
 		const keyIndex = keys.findIndex(k => k.id === id);
 		
@@ -157,7 +210,8 @@ export class KeyStorageManager {
 
 		const urlKey = key as URLValidationKey;
 		const now = Date.now();
-		urlKey.keyData = encodeToBase64(publicKey);
+		urlKey.preferredKeyRef = sanitizePreferredKeyRef(preferredKeyRef);
+		urlKey.keyData = encodeToBase64(buildKeySetModel(jwksKeys, sanitizePreferredKeyRef(preferredKeyRef)));
 		urlKey.lastFetchedAt = now;
 		urlKey.nextRefreshAt = calculateNextRefresh(urlKey.refreshPeriod, now);
 
@@ -168,7 +222,7 @@ export class KeyStorageManager {
 	/**
 	 * Update URL key editable settings without changing fetched key material
 	 */
-	async updateURLKeySettings(id: string, name: string, refreshPeriod: RefreshPeriod): Promise<URLValidationKey | undefined> {
+	async updateURLKeySettings(id: string, name: string, refreshPeriod: RefreshPeriod, preferredKeyRef?: string, description?: string): Promise<URLValidationKey | undefined> {
 		const keys = await this.getKeys();
 		const keyIndex = keys.findIndex(k => k.id === id);
 
@@ -183,7 +237,11 @@ export class KeyStorageManager {
 
 		const urlKey = key as URLValidationKey;
 		urlKey.name = name;
+		if (description !== undefined) {
+			urlKey.description = sanitizeDescription(description);
+		}
 		urlKey.refreshPeriod = refreshPeriod;
+		urlKey.preferredKeyRef = sanitizePreferredKeyRef(preferredKeyRef);
 		urlKey.nextRefreshAt = calculateNextRefresh(refreshPeriod, Date.now());
 
 		await this.context.globalState.update(STORAGE_KEY, keys);
@@ -193,7 +251,7 @@ export class KeyStorageManager {
 	/**
 	 * Update an existing manual key
 	 */
-	async updateManualKey(id: string, name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>): Promise<ManualValidationKey | undefined> {
+	async updateManualKey(id: string, name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, preferredKeyRef?: string, description?: string): Promise<ManualValidationKey | undefined> {
 		const keys = await this.getKeys();
 		const keyIndex = keys.findIndex(k => k.id === id);
 		
@@ -208,16 +266,59 @@ export class KeyStorageManager {
 
 		const manualKey = key as ManualValidationKey;
 		manualKey.name = name;
-		manualKey.keyData = encodeToBase64(buildManualKeyModel(publicKey, algorithm, keyType, claims));
+		if (description !== undefined) {
+			manualKey.description = sanitizeDescription(description);
+		}
+		manualKey.preferredKeyRef = sanitizePreferredKeyRef(preferredKeyRef);
+		manualKey.keyData = encodeToBase64(buildManualKeyModel(publicKey, algorithm, keyType, claims, preferredKeyRef));
 
 		await this.context.globalState.update(STORAGE_KEY, keys);
 		return manualKey;
 	}
 
+	async updatePreferredKeyRef(id: string, preferredKeyRef?: string): Promise<ValidationKey | undefined> {
+		const keys = await this.getKeys();
+		const keyIndex = keys.findIndex(k => k.id === id);
+
+		if (keyIndex === -1) {
+			return undefined;
+		}
+
+		keys[keyIndex].preferredKeyRef = sanitizePreferredKeyRef(preferredKeyRef);
+		await this.context.globalState.update(STORAGE_KEY, keys);
+		return keys[keyIndex];
+	}
+
+	async updateJWKSJsonKey(id: string, name: string, rawJwksJson: string, jwksKeys: Record<string, unknown>[], preferredKeyRef?: string, description?: string): Promise<JWKSJsonValidationKey | undefined> {
+		const keys = await this.getKeys();
+		const keyIndex = keys.findIndex(k => k.id === id);
+
+		if (keyIndex === -1) {
+			return undefined;
+		}
+
+		const key = keys[keyIndex];
+		if (key.source !== KeySource.JWKSJson) {
+			throw new Error('Cannot update non-JWKS JSON key with JWKS data');
+		}
+
+		const jwksKey = key as JWKSJsonValidationKey;
+		jwksKey.name = name;
+		if (description !== undefined) {
+			jwksKey.description = sanitizeDescription(description);
+		}
+		jwksKey.rawJwksJson = rawJwksJson;
+		jwksKey.preferredKeyRef = sanitizePreferredKeyRef(preferredKeyRef);
+		jwksKey.keyData = encodeToBase64(buildKeySetModel(jwksKeys, sanitizePreferredKeyRef(preferredKeyRef)));
+
+		await this.context.globalState.update(STORAGE_KEY, keys);
+		return jwksKey;
+	}
+
 	/**
 	 * Update only the display name of an existing key
 	 */
-	async updateKeyName(id: string, name: string): Promise<ValidationKey | undefined> {
+	async updateKeyName(id: string, name: string, description?: string): Promise<ValidationKey | undefined> {
 		const keys = await this.getKeys();
 		const keyIndex = keys.findIndex(k => k.id === id);
 
@@ -226,6 +327,9 @@ export class KeyStorageManager {
 		}
 
 		keys[keyIndex].name = name;
+		if (description !== undefined) {
+			keys[keyIndex].description = sanitizeDescription(description);
+		}
 		await this.context.globalState.update(STORAGE_KEY, keys);
 		return keys[keyIndex];
 	}

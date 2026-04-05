@@ -21,3 +21,10 @@ export function escapeHtml(s: unknown): string {
 		.replaceAll('>', '&gt;')
 		.replaceAll('"', '&quot;');
 }
+
+export function getRawJsonToggleLabel(isManualSource: boolean, isExpanded: boolean): string {
+	if (isManualSource) {
+		return isExpanded ? 'Hide Generated JWKS JSON' : 'Show Generated JWKS JSON';
+	}
+	return isExpanded ? 'Hide Raw JSON' : 'Show Raw JSON';
+}

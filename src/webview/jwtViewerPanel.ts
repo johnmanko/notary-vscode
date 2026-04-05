@@ -29,7 +29,8 @@ const sigContent     = document.getElementById('sig-content')     as HTMLElement
 const expiryBadge    = document.getElementById('expiry-badge')    as HTMLElement;
 const tsTable        = document.getElementById('ts-table')        as HTMLElement;
 const keySelect      = document.getElementById('key-select')      as HTMLSelectElement;
-const validateBtn    = document.getElementById('validate-btn')    as HTMLButtonElement;
+const keyMemberSelect = document.getElementById('key-member-select') as HTMLSelectElement;
+const keyMemberSource = document.getElementById('key-member-source') as HTMLSpanElement;
 const validationStatus = document.getElementById('validation-status') as HTMLElement;
 const validationResult = document.getElementById('validation-result') as HTMLElement;
 
@@ -38,7 +39,72 @@ let currentToken = '';
 interface ValidationKey {
 	id: string;
 	name: string;
-	source: 'manual' | 'url';
+	source: 'manual' | 'url' | 'jwks-json';
+}
+
+interface KeyOption {
+	ref: string;
+	label: string;
+}
+
+let currentKeyOptions: KeyOption[] = [];
+let keyOptionsDefaultRef: string | undefined;
+let keyOptionsDefaultReason: 'kid-match' | 'preferred' | 'single-key' | 'override' | undefined;
+
+function getSelectionReasonLabel(reason: 'kid-match' | 'preferred' | 'single-key' | 'override' | undefined): string {
+	if (reason === 'kid-match') {
+		return 'Using kid match';
+	}
+	if (reason === 'single-key') {
+		return 'Single key available';
+	}
+	if (reason === 'override') {
+		return 'Manual override';
+	}
+	return 'Using default key';
+}
+
+function renderKeySelectionSource(mode: 'hidden' | 'default' | 'manual'): void {
+	if (mode === 'hidden') {
+		keyMemberSource.style.display = 'none';
+		keyMemberSource.textContent = '';
+		keyMemberSource.className = 'key-member-source';
+		return;
+	}
+
+	keyMemberSource.style.display = 'inline-block';
+	if (mode === 'manual') {
+		keyMemberSource.textContent = 'Manual override';
+		keyMemberSource.className = 'key-member-source manual';
+		return;
+	}
+
+	keyMemberSource.textContent = getSelectionReasonLabel(keyOptionsDefaultReason);
+	keyMemberSource.className = keyOptionsDefaultReason === 'kid-match'
+		? 'key-member-source kid'
+		: 'key-member-source';
+}
+
+function canAutoValidate(): boolean {
+	if (!currentToken || !keySelect.value) {
+		return false;
+	}
+	if (keyMemberSelect.style.display !== 'none' && !keyMemberSelect.value) {
+		return false;
+	}
+	return true;
+}
+
+function requestValidationIfReady(): void {
+	if (!canAutoValidate()) {
+		return;
+	}
+	vscodeApi.postMessage({
+		type: 'validateSignature',
+		keyId: keySelect.value,
+		token: currentToken,
+		selectedKeyRef: keyMemberSelect.style.display !== 'none' ? keyMemberSelect.value : undefined
+	});
 }
 
 function moveCursorToEnd(): void {
@@ -117,8 +183,15 @@ function decodeJwt(raw: string): void {
 	currentToken = token;
 	vscodeApi.postMessage({ type: 'jwtChanged', encoded: token });
 	
-	// Update validate button state
-	validateBtn.disabled = !token || keySelect.value === '';
+	if (keySelect.value) {
+		vscodeApi.postMessage({
+			type: 'requestKeyOptions',
+			keyId: keySelect.value,
+			token: token
+		});
+	} else {
+		clearValidation();
+	}
 	
 	if (!token) {
 		clearError();
@@ -248,23 +321,34 @@ function showValidationResult(isValid: boolean, message: string): void {
 
 // Key selection change
 keySelect.addEventListener('change', () => {
-	validateBtn.disabled = !currentToken || keySelect.value === '';
+	const selectedKeyId = keySelect.value;
+	if (!selectedKeyId) {
+		currentKeyOptions = [];
+		keyOptionsDefaultRef = undefined;
+		keyOptionsDefaultReason = undefined;
+		keyMemberSelect.style.display = 'none';
+		keyMemberSelect.innerHTML = '<option value="">Select key in set...</option>';
+		renderKeySelectionSource('hidden');
+		clearValidation();
+		return;
+	}
+
+	vscodeApi.postMessage({
+		type: 'requestKeyOptions',
+		keyId: selectedKeyId,
+		token: currentToken
+	});
+
 	clearValidation();
 });
 
-// Validate button click
-validateBtn.addEventListener('click', () => {
-	const keyId = keySelect.value;
-	if (!keyId || !currentToken) {
-		return;
+keyMemberSelect.addEventListener('change', () => {
+	if (keyMemberSelect.style.display !== 'none') {
+		const isDefault = keyMemberSelect.value === keyOptionsDefaultRef;
+		renderKeySelectionSource(isDefault ? 'default' : 'manual');
 	}
-	
 	clearValidation();
-	vscodeApi.postMessage({
-		type: 'validateSignature',
-		keyId,
-		token: currentToken
-	});
+ 	requestValidationIfReady();
 });
 
 // Handle messages from extension
@@ -273,11 +357,44 @@ window.addEventListener('message', (event: MessageEvent<{
 	keys?: ValidationKey[];
 	isValid?: boolean;
 	message?: string;
+	keyId?: string;
+	options?: KeyOption[];
+	selectedKeyRef?: string;
+	selectionReason?: 'kid-match' | 'preferred' | 'single-key' | 'override';
+	error?: string;
 }>) => {
 	const data = event.data;
 	
 	if (data.type === 'keyList') {
 		updateKeyList(data.keys || []);
+	} else if (data.type === 'keyOptions') {
+		currentKeyOptions = data.options || [];
+		if (currentKeyOptions.length === 0) {
+			keyOptionsDefaultRef = undefined;
+			keyOptionsDefaultReason = undefined;
+			keyMemberSelect.style.display = 'none';
+			keyMemberSelect.innerHTML = '<option value="">Select key in set...</option>';
+			renderKeySelectionSource('hidden');
+			if (data.error) {
+				showValidationResult(false, data.error);
+			}
+		} else {
+			keyMemberSelect.style.display = 'inline-block';
+			keyMemberSelect.innerHTML = currentKeyOptions
+				.map((opt) => `<option value="${escapeHtml(opt.ref)}">${escapeHtml(opt.label)}</option>`)
+				.join('');
+			const selected = typeof data.selectedKeyRef === 'string' && currentKeyOptions.some(opt => opt.ref === data.selectedKeyRef)
+				? data.selectedKeyRef
+				: currentKeyOptions[0].ref;
+			keyOptionsDefaultRef = selected;
+			keyOptionsDefaultReason = data.selectionReason;
+			keyMemberSelect.value = selected;
+			renderKeySelectionSource('default');
+			if (data.error) {
+				clearValidation();
+			}
+			requestValidationIfReady();
+		}
 	} else if (data.type === 'validationResult') {
 		showValidationResult(data.isValid ?? false, data.message || '');
 	}
@@ -299,10 +416,19 @@ function updateKeyList(keys: ValidationKey[]): void {
 	// Restore previous selection if still available
 	if (currentValue && keys.some(k => k.id === currentValue)) {
 		keySelect.value = currentValue;
+		vscodeApi.postMessage({
+			type: 'requestKeyOptions',
+			keyId: currentValue,
+			token: currentToken
+		});
+	} else {
+		keyOptionsDefaultRef = undefined;
+		keyOptionsDefaultReason = undefined;
+		keyMemberSelect.style.display = 'none';
+		keyMemberSelect.innerHTML = '<option value="">Select key in set...</option>';
+		renderKeySelectionSource('hidden');
+		clearValidation();
 	}
-	
-	// Update validate button state
-	validateBtn.disabled = !currentToken || keySelect.value === '';
 }
 
 // Request initial key list

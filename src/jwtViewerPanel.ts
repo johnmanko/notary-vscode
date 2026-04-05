@@ -12,7 +12,7 @@ import * as vscode from 'vscode';
 import { loadHtmlTemplate, createAssetUris, getMediaRootUri } from './utils/webviewUtils';
 import { KeyManager } from './utils/keyManager';
 import { validateJWTSignature } from './utils/jwtValidator';
-import { isManualKey } from './types/keyManagement';
+import { decodeJwt } from './utils/jwtDecoder';
 
 export type PanelStateChangeCallback = (snippet: string | null) => void;
 
@@ -69,8 +69,10 @@ export class JwtViewerPanel {
 					this._onStateChange(this._snippet);
 				} else if (message.type === 'requestKeyList') {
 					await this.sendKeyList();
+				} else if (message.type === 'requestKeyOptions') {
+					await this.sendKeyOptions(message.keyId, message.token);
 				} else if (message.type === 'validateSignature') {
-					await this.handleValidation(message.keyId, message.token);
+					await this.handleValidation(message.keyId, message.token, message.selectedKeyRef);
 				}
 			},
 			null,
@@ -97,7 +99,43 @@ export class JwtViewerPanel {
 		});
 	}
 
-	private async handleValidation(keyId: string, token: string): Promise<void> {
+	private async sendKeyOptions(keyId: string, token: string): Promise<void> {
+		if (!this._keyManager) {
+			return;
+		}
+
+		const key = await this._keyManager.getKeyById(keyId);
+		if (!key) {
+			this._panel.webview.postMessage({
+				type: 'keyOptions',
+				keyId,
+				options: [],
+				selectedKeyRef: undefined,
+				error: 'Key not found'
+			});
+			return;
+		}
+
+		const decoded = decodeJwt(token || '');
+		const tokenKid = decoded.success && decoded.header && typeof decoded.header.kid === 'string'
+			? decoded.header.kid
+			: undefined;
+		const editorData = this._keyManager.getKeyEditorData(key);
+		const options = editorData.availableKeyOptions || [];
+		const material = this._keyManager.getValidationMaterial(key, tokenKid);
+		const fallbackSelected = editorData.preferredKeyRef || (options.length > 0 ? options[0].ref : undefined);
+
+		this._panel.webview.postMessage({
+			type: 'keyOptions',
+			keyId,
+			options: material.success && material.data ? material.data.availableKeyOptions : options,
+			selectedKeyRef: material.success && material.data ? material.data.selectedKeyRef : fallbackSelected,
+			selectionReason: material.success && material.data ? material.data.selectionReason : undefined,
+			error: material.success ? undefined : material.error
+		});
+	}
+
+	private async handleValidation(keyId: string, token: string, selectedKeyRef?: string): Promise<void> {
 		if (!this._keyManager) {
 			this._panel.webview.postMessage({
 				type: 'validationResult',
@@ -108,6 +146,11 @@ export class JwtViewerPanel {
 		}
 
 		try {
+			const decoded = decodeJwt(token);
+			const tokenKid = decoded.success && decoded.header && typeof decoded.header.kid === 'string'
+				? decoded.header.kid
+				: undefined;
+
 			// Get and refresh key if needed
 			const keyResult = await this._keyManager.getKeyAndRefreshIfNeeded(keyId);
 			
@@ -120,20 +163,20 @@ export class JwtViewerPanel {
 				return;
 			}
 
-			// Build a usable public key from stored model data
-			const publicKey = this._keyManager.getPublicKeyForValidation(keyResult.key);
-			const manualKeyMetadata = isManualKey(keyResult.key)
-				? (() => {
-					const editorData = this._keyManager.getKeyEditorData(keyResult.key);
-					return {
-						algorithm: editorData.algorithm || 'RS256',
-						typ: editorData.typ || 'JWT'
-					};
-				})()
-				: undefined;
+			const material = this._keyManager.getValidationMaterial(keyResult.key, tokenKid, selectedKeyRef);
+			if (!material.success || !material.data) {
+				this._panel.webview.postMessage({
+					type: 'validationResult',
+					isValid: false,
+					message: material.error || 'Failed to select a key for validation'
+				});
+				return;
+			}
+
+			const publicKey = material.data.publicKey;
 			
 			// Validate the signature
-			const validationResult = await validateJWTSignature(token, publicKey, manualKeyMetadata);
+			const validationResult = await validateJWTSignature(token, publicKey);
 			
 			this._panel.webview.postMessage({
 				type: 'validationResult',

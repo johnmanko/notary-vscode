@@ -10,7 +10,7 @@
  */
 import * as vscode from 'vscode';
 import { KeyManager } from './utils/keyManager';
-import { isURLKey, RefreshPeriod } from './types/keyManagement';
+import { isURLKey, isJWKSJsonKey, RefreshPeriod } from './types/keyManagement';
 import { loadHtmlTemplate, createAssetUris, getMediaRootUri } from './utils/webviewUtils';
 import { confirmAndDeleteKey } from './utils/keyDeletion';
 
@@ -62,11 +62,13 @@ export class KeyDetailsPanel {
 						await this.loadKeyData();
 					}
 				} else if (message.type === 'createManualKey') {
-					await this.handleCreateManualKey(message.name, message.keyData, message.algorithm, message.keyType, message.claims);
+					await this.handleCreateManualKey(message.name, message.description, message.keyData, message.algorithm, message.keyType, message.claims);
 				} else if (message.type === 'createURLKey') {
-					await this.handleCreateURLKey(message.name, message.url, message.refreshPeriod);
+					await this.handleCreateURLKey(message.name, message.description, message.url, message.refreshPeriod);
+				} else if (message.type === 'createJWKSJsonKey') {
+					await this.handleCreateJWKSJsonKey(message.name, message.description, message.jwksJson);
 				} else if (message.type === 'updateKey') {
-					await this.handleUpdateKey(message.name, message.keyData, message.algorithm, message.refreshPeriod, message.keyType, message.claims);
+					await this.handleUpdateKey(message.name, message.description, message.keyData, message.algorithm, message.refreshPeriod, message.keyType, message.claims, message.preferredKeyRef, message.jwksJson);
 				} else if (message.type === 'deleteKey') {
 					await this.handleDeleteKey(message.id);
 				} else if (message.type === 'refreshKey') {
@@ -122,6 +124,8 @@ export class KeyDetailsPanel {
 			return;
 		}
 
+		this._panel.title = `Key Details: ${key.name}`;
+
 		const editorData = this._keyManager.getKeyEditorData(key);
 		
 		this._panel.webview.postMessage({
@@ -129,6 +133,7 @@ export class KeyDetailsPanel {
 			key: {
 				id: key.id,
 				name: key.name,
+				description: key.description,
 				source: key.source,
 				keyData: editorData.decodedKey,
 				claims: editorData.claims,
@@ -136,8 +141,11 @@ export class KeyDetailsPanel {
 				algorithm: editorData.algorithm,
 				typ: editorData.typ,
 				kid: editorData.kid,
+				preferredKeyRef: editorData.preferredKeyRef,
+				availableKeyOptions: editorData.availableKeyOptions,
 				url: isURLKey(key) ? key.url : undefined,
 				refreshPeriod: isURLKey(key) ? key.refreshPeriod : undefined,
+				jwksJson: isJWKSJsonKey(key) ? key.rawJwksJson : undefined,
 				createdAt: key.createdAt,
 				lastFetchedAt: isURLKey(key) ? key.lastFetchedAt : undefined,
 				nextRefreshAt: isURLKey(key) ? key.nextRefreshAt : undefined
@@ -145,8 +153,8 @@ export class KeyDetailsPanel {
 		});
 	}
 
-	private async handleCreateManualKey(name: string, keyData: string, algorithm: string, keyType?: string, claims?: Record<string, unknown>): Promise<void> {
-		const result = await this._keyManager.addManualKey(name, keyData, algorithm || 'RS256', keyType || 'RSA', claims);
+	private async handleCreateManualKey(name: string, description: string, keyData: string, algorithm: string, keyType?: string, claims?: Record<string, unknown>): Promise<void> {
+		const result = await this._keyManager.addManualKey(name, keyData, algorithm || 'RS256', keyType || 'RSA', claims, description);
 		if (result.success) {
 			vscode.window.showInformationMessage(`Key "${name}" added successfully`);
 			await this._onKeyChanged();
@@ -156,13 +164,13 @@ export class KeyDetailsPanel {
 		}
 	}
 
-	private async handleCreateURLKey(name: string, url: string, refreshPeriod: string): Promise<void> {
+	private async handleCreateURLKey(name: string, description: string, url: string, refreshPeriod: string): Promise<void> {
 		await vscode.window.withProgress({
 			location: vscode.ProgressLocation.Notification,
 			title: `Fetching key from ${url}...`,
 			cancellable: false
 		}, async () => {
-			const result = await this._keyManager.addURLKey(name, url, refreshPeriod as any);
+			const result = await this._keyManager.addURLKey(name, url, refreshPeriod as any, description);
 			
 			if (result.success) {
 				vscode.window.showInformationMessage(`Key "${name}" fetched and added successfully`);
@@ -174,7 +182,18 @@ export class KeyDetailsPanel {
 		});
 	}
 
-	private async handleUpdateKey(name: string, keyData: string, algorithm: string, refreshPeriod?: string, keyType?: string, claims?: Record<string, unknown>): Promise<void> {
+	private async handleCreateJWKSJsonKey(name: string, description: string, jwksJson: string): Promise<void> {
+		const result = await this._keyManager.addJWKSJsonKey(name, jwksJson, description);
+		if (result.success) {
+			vscode.window.showInformationMessage(`Key "${name}" added successfully`);
+			await this._onKeyChanged();
+			this._panel.dispose();
+		} else {
+			this.showError(result.error || 'Failed to add JWKS JSON key');
+		}
+	}
+
+	private async handleUpdateKey(name: string, description: string, keyData: string, algorithm: string, refreshPeriod?: string, keyType?: string, claims?: Record<string, unknown>, preferredKeyRef?: string, jwksJson?: string): Promise<void> {
 		if (!this._keyId) {
 			return;
 		}
@@ -185,8 +204,10 @@ export class KeyDetailsPanel {
 		}
 
 		const result = isURLKey(key)
-			? await this._keyManager.updateURLKeySettings(this._keyId, name, (refreshPeriod as RefreshPeriod) || key.refreshPeriod)
-			: await this._keyManager.updateManualKey(this._keyId, name, keyData, algorithm || 'RS256', keyType || 'RSA', claims);
+			? await this._keyManager.updateURLKeySettings(this._keyId, name, (refreshPeriod as RefreshPeriod) || key.refreshPeriod, preferredKeyRef, description)
+			: isJWKSJsonKey(key)
+				? await this._keyManager.updateJWKSJsonKey(this._keyId, name, typeof jwksJson === 'string' ? jwksJson : key.rawJwksJson, description)
+				: await this._keyManager.updateManualKey(this._keyId, name, keyData, algorithm || 'RS256', keyType || 'RSA', claims, preferredKeyRef, description);
 		if (result.success) {
 			vscode.window.showInformationMessage(isURLKey(key) ? 'URL key updated successfully' : 'Key updated successfully');
 			await this._onKeyChanged();

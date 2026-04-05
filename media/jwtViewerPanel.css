@@ -286,10 +286,11 @@ body {
 	display: flex;
 	gap: 8px;
 	align-items: center;
+	flex-wrap: wrap;
 }
 
 .key-select {
-	flex: 1;
+	flex: 1 1 220px;
 	padding: 5px 8px;
 	background: var(--vscode-input-background);
 	color: var(--vscode-input-foreground);
@@ -305,25 +306,25 @@ body {
 	outline-offset: -1px;
 }
 
-.validate-btn {
-	padding: 5px 12px;
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
-	border: none;
-	border-radius: 3px;
-	font-size: 12px;
-	font-family: var(--vscode-font-family);
-	cursor: pointer;
+.key-member-source {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	padding: 3px 8px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 12px;
 	white-space: nowrap;
 }
 
-.validate-btn:hover:not(:disabled) {
-	background: var(--vscode-button-hoverBackground);
+.key-member-source.manual {
+	color: var(--vscode-focusBorder, var(--vscode-contrastBorder, var(--vscode-panel-border)));
+	background: transparent;
+	border-color: var(--vscode-focusBorder, var(--vscode-contrastBorder, var(--vscode-panel-border)));
+	font-weight: 600;
 }
 
-.validate-btn:disabled {
-	opacity: 0.5;
-	cursor: not-allowed;
+.key-member-source.kid {
+	color: var(--vscode-testing-iconPassed, #73c991);
+	border-color: var(--vscode-testing-iconPassed, #73c991);
 }
 
 .validation-result {

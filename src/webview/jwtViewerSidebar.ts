@@ -26,7 +26,8 @@ interface PanelInfo {
 interface ValidationKey {
 	id: string;
 	name: string;
-	source: 'manual' | 'url';
+	description?: string;
+	source: 'manual' | 'url' | 'jwks-json';
 	url?: string;
 	refreshPeriod?: string;
 	lastFetchedAt?: number;
@@ -114,6 +115,9 @@ function renderKeyList(keys: ValidationKey[]): void {
 	container.innerHTML = keys.map(key => {
 		const isUrl = key.source === 'url';
 		const badge = `<span class="key-badge ${key.source}">${escapeHtml(key.source.toUpperCase())}</span>`;
+		const description = typeof key.description === 'string' && key.description.trim()
+			? `<div class="key-description">${escapeHtml(key.description.trim())}</div>`
+			: '';
 		
 		let details = '';
 		if (isUrl && key.url) {
@@ -137,12 +141,13 @@ function renderKeyList(keys: ValidationKey[]): void {
 					<div class="key-name">${escapeHtml(key.name)}</div>
 					${badge}
 				</div>
+				${description}
 				<div class="key-details">
 					${details}
 				</div>
 				<div class="key-actions">
-					${actions}
 					<button class="key-action-btn" data-action="view" data-id="${escapeHtml(key.id)}">View Key</button>
+					${actions}
 					<button class="key-action-btn danger" data-action="delete" data-id="${escapeHtml(key.id)}">Delete</button>
 				</div>
 			</div>

@@ -11,8 +11,9 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'mocha';
-import { RefreshPeriod, KeySource, getRefreshPeriodMs, calculateNextRefresh, needsRefresh } from '../src/types/keyManagement';
+import { RefreshPeriod, KeySource, isJWKSJsonKey, getRefreshPeriodMs, calculateNextRefresh, needsRefresh } from '../src/types/keyManagement';
 import { encodeToBase64, decodeFromBase64 } from '../src/utils/keyStorage';
+import { KeyStorageManager } from '../src/utils/keyStorage';
 import { isValidOIDCUrl } from '../src/utils/oidcKeyFetcher';
 import { validateJWTStructure } from '../src/utils/jwtValidator';
 
@@ -111,6 +112,25 @@ suite('Key Management Types', () => {
 			assert.strictEqual(needsRefresh(urlKey), true);
 		});
 	});
+
+	suite('Key source types', () => {
+		test('Should include jwks-json as a key source', () => {
+			assert.strictEqual(KeySource.JWKSJson, 'jwks-json');
+		});
+
+		test('Should identify jwks-json keys with type guard', () => {
+			const jwksKey = {
+				id: 'jwks-1',
+				name: 'JWKS Key',
+				source: KeySource.JWKSJson as KeySource.JWKSJson,
+				keyData: 'test',
+				rawJwksJson: '{"keys":[]}',
+				createdAt: Date.now()
+			};
+
+			assert.strictEqual(isJWKSJsonKey(jwksKey), true);
+		});
+	});
 });
 
 suite('Key Storage', () => {
@@ -162,6 +182,63 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA
 			const encoded = encodeToBase64(input);
 			const decoded = decodeFromBase64(encoded);
 			assert.strictEqual(decoded, input);
+		});
+
+		test('Should persist manual keys as a single-key JWKS model', async () => {
+			let storedValue: unknown;
+			const context = {
+				globalState: {
+					get: (_key: string, defaultValue: unknown) => (storedValue ?? defaultValue),
+					update: async (_key: string, value: unknown) => {
+						storedValue = value;
+					}
+				}
+			} as never;
+
+			const storage = new KeyStorageManager(context);
+			await storage.addManualKey(
+				'Manual Key',
+				'-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtest\n-----END PUBLIC KEY-----',
+				'RS256',
+				'RSA',
+				{ kid: 'key1' }
+			);
+
+			const keys = await storage.getKeys();
+			assert.strictEqual(keys.length, 1);
+
+			const decodedModel = JSON.parse(decodeFromBase64(keys[0].keyData)) as { keys?: unknown[]; preferredKeyRef?: string };
+			assert.ok(Array.isArray(decodedModel.keys));
+			assert.strictEqual(decodedModel.keys?.length, 1);
+			assert.strictEqual(decodedModel.preferredKeyRef, 'kid:key1');
+		});
+
+		test('Should persist description and cap it at 50 characters', async () => {
+			let storedValue: unknown;
+			const context = {
+				globalState: {
+					get: (_key: string, defaultValue: unknown) => (storedValue ?? defaultValue),
+					update: async (_key: string, value: unknown) => {
+						storedValue = value;
+					}
+				}
+			} as never;
+
+			const storage = new KeyStorageManager(context);
+			const longDescription = 'x'.repeat(60);
+			await storage.addManualKey(
+				'Described Manual Key',
+				'-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtest\n-----END PUBLIC KEY-----',
+				'RS256',
+				'RSA',
+				{ kid: 'key1' },
+				undefined,
+				longDescription
+			);
+
+			const keys = await storage.getKeys();
+			assert.strictEqual(keys.length, 1);
+			assert.strictEqual((keys[0].description || '').length, 50);
 		});
 	});
 });

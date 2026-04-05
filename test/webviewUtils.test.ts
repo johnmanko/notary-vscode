@@ -12,6 +12,7 @@
 import * as assert from 'node:assert';
 import * as vscode from 'vscode';
 import { getNonce, createAssetUris } from '../src/utils/webviewUtils';
+import { getRawJsonToggleLabel } from '../src/webview/utils';
 
 suite('Webview Utils Test Suite', () => {
 	
@@ -120,6 +121,24 @@ suite('Webview Utils Test Suite', () => {
 				uris2['{{STYLE_URI}}'],
 				'Different base names should produce different URIs'
 			);
+		});
+	});
+
+	suite('getRawJsonToggleLabel', () => {
+		test('manual mode should show generated JWKS label when collapsed', () => {
+			assert.strictEqual(getRawJsonToggleLabel(true, false), 'Show Generated JWKS JSON');
+		});
+
+		test('manual mode should show generated JWKS hide label when expanded', () => {
+			assert.strictEqual(getRawJsonToggleLabel(true, true), 'Hide Generated JWKS JSON');
+		});
+
+		test('non-manual mode should show raw JSON label when collapsed', () => {
+			assert.strictEqual(getRawJsonToggleLabel(false, false), 'Show Raw JSON');
+		});
+
+		test('non-manual mode should show raw JSON hide label when expanded', () => {
+			assert.strictEqual(getRawJsonToggleLabel(false, true), 'Hide Raw JSON');
 		});
 	});
 });

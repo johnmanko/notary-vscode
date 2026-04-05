@@ -90,7 +90,10 @@ SPDX-License-Identifier: GPL-3.0
 				<select id="key-select" class="key-select">
 					<option value="">Select a validation key...</option>
 				</select>
-				<button class="validate-btn" id="validate-btn" disabled>Validate Signature</button>
+				<select id="key-member-select" class="key-select" style="display: none;">
+					<option value="">Select key in set...</option>
+				</select>
+				<span id="key-member-source" class="key-member-source" style="display: none;"></span>
 			</div>
 			<div class="validation-result hidden" id="validation-result"></div>
 		</div>

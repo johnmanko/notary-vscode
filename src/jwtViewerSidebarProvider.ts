@@ -182,6 +182,7 @@ export class JwtViewerSidebarProvider implements vscode.WebviewViewProvider {
 			const serializedKeys = keys.map(key => ({
 				id: key.id,
 				name: key.name,
+				description: key.description,
 				source: key.source,
 				url: 'url' in key ? key.url : undefined,
 				refreshPeriod: 'refreshPeriod' in key ? key.refreshPeriod : undefined,

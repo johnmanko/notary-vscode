@@ -206,6 +206,14 @@ textarea.form-input {
 	color: var(--vscode-foreground);
 }
 
+.key-description {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.35;
+	margin: 1px 0 4px;
+	word-break: break-word;
+}
+
 .key-badge {
 	font-size: 9px;
 	padding: 2px 5px;
@@ -222,6 +230,11 @@ textarea.form-input {
 
 .key-badge.url {
 	background: var(--vscode-charts-green);
+	color: #fff;
+}
+
+.key-badge.jwks-json {
+	background: var(--vscode-charts-orange);
 	color: #fff;
 }
 
@@ -263,6 +276,7 @@ textarea.form-input {
 .key-action-btn.danger {
 	background: var(--vscode-errorForeground);
 	color: #fff;
+	margin-left: auto;
 }
 
 .key-action-btn.danger:hover {

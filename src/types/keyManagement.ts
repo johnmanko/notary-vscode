@@ -23,7 +23,8 @@ export enum RefreshPeriod {
  */
 export enum KeySource {
 	Manual = 'manual',
-	URL = 'url'
+	URL = 'url',
+	JWKSJson = 'jwks-json'
 }
 
 /**
@@ -34,8 +35,12 @@ export interface ValidationKey {
 	id: string;
 	/** User-provided name for the key */
 	name: string;
+	/** Optional short description for the key set */
+	description?: string;
 	/** Source type of the key */
 	source: KeySource;
+	/** Optional preferred key reference when a JWKS contains multiple keys */
+	preferredKeyRef?: string;
 	/** Base64-encoded public key */
 	keyData: string;
 	/** Timestamp when the key was created */
@@ -65,6 +70,15 @@ export interface URLValidationKey extends ValidationKey {
 }
 
 /**
+ * Direct JWKS JSON validation key
+ */
+export interface JWKSJsonValidationKey extends ValidationKey {
+	source: KeySource.JWKSJson;
+	/** Full JWKS JSON entered by user */
+	rawJwksJson: string;
+}
+
+/**
  * Type guard to check if a key is URL-based
  */
 export function isURLKey(key: ValidationKey): key is URLValidationKey {
@@ -76,6 +90,13 @@ export function isURLKey(key: ValidationKey): key is URLValidationKey {
  */
 export function isManualKey(key: ValidationKey): key is ManualValidationKey {
 	return key.source === KeySource.Manual;
+}
+
+/**
+ * Type guard to check if a key is direct JWKS JSON-based
+ */
+export function isJWKSJsonKey(key: ValidationKey): key is JWKSJsonValidationKey {
+	return key.source === KeySource.JWKSJson;
 }
 
 /**

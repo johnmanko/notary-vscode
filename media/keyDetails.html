@@ -31,6 +31,10 @@ SPDX-License-Identifier: GPL-3.0
 					<span>Fetch from URL</span>
 				</label>
 				<label class="radio-label">
+					<input type="radio" name="key-source" value="jwks-json" id="source-jwks-json" />
+					<span>Paste JWKS JSON</span>
+				</label>
+				<label class="radio-label">
 					<input type="radio" name="key-source" value="manual" id="source-manual" />
 					<span>Manual Entry</span>
 				</label>
@@ -40,6 +44,12 @@ SPDX-License-Identifier: GPL-3.0
 		<div class="section">
 			<label class="label">Key Name</label>
 			<input type="text" id="key-name" class="input" placeholder="Key name" />
+		</div>
+
+		<div class="section">
+			<label class="label">Description</label>
+			<input type="text" id="key-description" class="input" maxlength="50" placeholder="Optional short description (max 50 chars)" />
+			<div id="key-description-counter" class="description-counter">0/50</div>
 		</div>
 
 		<div class="section" id="url-section" style="display: none;">
@@ -59,6 +69,13 @@ SPDX-License-Identifier: GPL-3.0
 			</select>
 		</div>
 
+		<div class="section" id="jwks-json-section" style="display: none;">
+			<label class="label">JWKS JSON</label>
+			<textarea id="jwks-json-input" class="textarea" rows="8" placeholder='{"keys":[{"kty":"RSA","n":"...","e":"AQAB","use":"sig","alg":"RS256","kid":"key1"}]}'></textarea>
+			<div class="help-text">Paste a full JWKS document. The best key (prefers use="sig") is selected and shown below as read-only claims.</div>
+			<div id="jwks-json-status" class="status-line" style="display: none;"></div>
+		</div>
+
 		<div class="section" id="public-key-section">
 			<label class="label">Public Key</label>
 			<textarea id="key-data" class="textarea" rows="12" placeholder="Public key data"></textarea>
@@ -73,6 +90,12 @@ SPDX-License-Identifier: GPL-3.0
 		<div class="section" id="manual-metadata-section">
 			<label class="label">Claims</label>
 			<div id="claims-fields" class="metadata-grid"></div>
+		</div>
+
+		<div class="section" id="key-selection-section" style="display: none;">
+			<label class="label">Fallback Validation Key</label>
+			<select id="preferred-key-select" class="input"></select>
+			<div class="help-text">Used when JWT kid is missing or no kid match exists in this key set.</div>
 		</div>
 
 		<div class="section" id="metadata-section">

@@ -12,6 +12,8 @@
 // Webview script for key details panel.
 // Compiled by esbuild to media/keyDetails.js — runs in the webview (browser) context.
 
+import { getRawJsonToggleLabel } from '../utils';
+
 declare function acquireVsCodeApi(): {
 	postMessage(message: unknown): void;
 };
@@ -23,6 +25,8 @@ const vscodeApi = acquireVsCodeApi();
 const keyTitle = document.getElementById('key-title')!;
 const keySource = document.getElementById('key-source')!;
 const keyNameInput = document.getElementById('key-name') as HTMLInputElement;
+const keyDescriptionInput = document.getElementById('key-description') as HTMLInputElement;
+const keyDescriptionCounter = document.getElementById('key-description-counter')!;
 const keyDataTextarea = document.getElementById('key-data') as HTMLTextAreaElement;
 const publicKeySection = document.getElementById('public-key-section')!;
 const claimsFields = document.getElementById('claims-fields')!;
@@ -31,6 +35,7 @@ const rawJsonToggle = document.getElementById('raw-json-toggle') as HTMLButtonEl
 const rawJsonContent = document.getElementById('raw-json-content')!;
 const sourceSelectionSection = document.getElementById('source-selection-section')!;
 const sourceUrlRadio = document.getElementById('source-url') as HTMLInputElement;
+const sourceJwksJsonRadio = document.getElementById('source-jwks-json') as HTMLInputElement;
 const sourceManualRadio = document.getElementById('source-manual') as HTMLInputElement;
 const urlSection = document.getElementById('url-section')!;
 const keyUrlReadonly = document.getElementById('key-url-readonly')!;
@@ -39,7 +44,11 @@ const urlHelp = document.getElementById('url-help')!;
 const refreshSection = document.getElementById('refresh-section')!;
 const refreshPeriodReadonly = document.getElementById('refresh-period-readonly')!;
 const refreshPeriodSelect = document.getElementById('refresh-period-select') as HTMLSelectElement;
+const jwksJsonSection = document.getElementById('jwks-json-section')!;
+const jwksJsonInput = document.getElementById('jwks-json-input') as HTMLTextAreaElement;
+const jwksJsonStatus = document.getElementById('jwks-json-status')!;
 const manualMetadataSection = document.getElementById('manual-metadata-section')!;
+const keySelectionSection = document.getElementById('key-selection-section')!;
 const metadataSection = document.getElementById('metadata-section')!;
 const createdAtSpan = document.getElementById('created-at')!;
 const lastFetchedItem = document.getElementById('last-fetched-item')!;
@@ -53,6 +62,7 @@ const deleteBtn = document.getElementById('delete-btn')!;
 
 let currentKey: any = null;
 let isUrlKey = false;
+let isJwksJsonKey = false;
 let isCreateMode = false;
 let currentClaims: Record<string, unknown> = {};
 let modulusDerivationRequestId = 0;
@@ -205,6 +215,76 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 	return bytes.buffer;
 }
 
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+	const bytes = new Uint8Array(buffer);
+	let binary = '';
+	for (let index = 0; index < bytes.length; index += 1) {
+		binary += String.fromCharCode(bytes[index]);
+	}
+	return btoa(binary);
+}
+
+function chunkString(value: string, chunkSize: number): string[] {
+	const chunks: string[] = [];
+	for (let index = 0; index < value.length; index += chunkSize) {
+		chunks.push(value.slice(index, index + chunkSize));
+	}
+	return chunks;
+}
+
+async function derivePublicKeyPemFromJwk(record: Record<string, unknown>): Promise<string | null> {
+	if (!window.crypto?.subtle) {
+		return null;
+	}
+
+	const kty = typeof record.kty === 'string' ? record.kty : '';
+	const n = typeof record.n === 'string' ? record.n : '';
+	const e = typeof record.e === 'string' ? record.e : '';
+	if (kty !== 'RSA' || !n || !e) {
+		return null;
+	}
+
+	const jwkRecord: Record<string, unknown> = {
+		kty: 'RSA',
+		n,
+		e
+	};
+
+	const optionalFields = ['kid', 'alg', 'use'] as const;
+	for (const field of optionalFields) {
+		if (typeof record[field] === 'string') {
+			jwkRecord[field] = record[field] as string;
+		}
+	}
+
+	try {
+		const key = await window.crypto.subtle.importKey(
+			'jwk',
+			jwkRecord as JsonWebKey,
+			{ name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+			true,
+			['verify']
+		);
+		const spki = await window.crypto.subtle.exportKey('spki', key);
+		const base64Body = chunkString(arrayBufferToBase64(spki), 64).join('\n');
+		return `-----BEGIN PUBLIC KEY-----\n${base64Body}\n-----END PUBLIC KEY-----`;
+	} catch {
+		return null;
+	}
+}
+
+async function populateGroupedPublicKeys(keys: Record<string, unknown>[]): Promise<void> {
+	await Promise.all(keys.map(async (jwk, index) => {
+		const textarea = claimsFields.querySelector<HTMLTextAreaElement>(`textarea[data-group-public-key-index="${index}"]`);
+		if (!textarea) {
+			return;
+		}
+
+		const pem = await derivePublicKeyPemFromJwk(jwk);
+		textarea.value = pem || 'Unavailable for this key.';
+	}));
+}
+
 async function deriveModulusFromPem(normalizedPem: string): Promise<string> {
 	const base64Body = extractPemBodyBase64(normalizedPem);
 	if (!base64Body) {
@@ -234,7 +314,7 @@ async function deriveModulusFromPem(normalizedPem: string): Promise<string> {
 }
 
 async function updateDerivedModulusClaim(): Promise<void> {
-	if (sourceUrlRadio.checked) {
+	if (sourceUrlRadio.checked || sourceJwksJsonRadio.checked) {
 		return;
 	}
 
@@ -266,6 +346,8 @@ async function updateDerivedModulusClaim(): Promise<void> {
 	} else {
 		renderModulusHint('Unable to derive RSA modulus from the current PEM.');
 	}
+
+	updateManualRawJsonPreview();
 }
 
 function validateManualClaims(claims: Record<string, unknown>): { valid: boolean; error?: string } {
@@ -277,16 +359,237 @@ function validateManualClaims(claims: Record<string, unknown>): { valid: boolean
 	return { valid: true };
 }
 
+function autoResizeTextarea(textarea: HTMLTextAreaElement): void {
+	textarea.style.height = 'auto';
+	textarea.style.height = `${Math.max(textarea.scrollHeight, 140)}px`;
+}
+
+function setJWKSStatus(message: string, state: 'success' | 'error' | 'info', visible: boolean = true): void {
+	jwksJsonStatus.textContent = message;
+	jwksJsonStatus.className = `status-line ${state}`;
+	jwksJsonStatus.style.display = visible ? 'block' : 'none';
+}
+
+function setPublicKeyReadOnlyMode(readOnly: boolean): void {
+	keyDataTextarea.readOnly = readOnly;
+	keyDataTextarea.disabled = false;
+	if (readOnly) {
+		keyDataTextarea.classList.add('readonly-field');
+	} else {
+		keyDataTextarea.classList.remove('readonly-field');
+	}
+}
+
+function renderPreferredKeyOptions(): void {
+	keySelectionSection.style.display = 'none';
+}
+
+function getRawJsonShowLabel(): string {
+	return getRawJsonToggleLabel(sourceManualRadio.checked, false);
+}
+
+function getRawJsonHideLabel(): string {
+	return getRawJsonToggleLabel(sourceManualRadio.checked, true);
+}
+
+function buildManualKeyModelForPreview(): Record<string, unknown> {
+	ensureManualClaimDefaults(currentClaims);
+	const normalizedPem = normalizePemInput(keyDataTextarea.value);
+	return {
+		kty: typeof currentClaims.kty === 'string' ? currentClaims.kty : 'RSA',
+		n: typeof currentClaims.n === 'string' ? currentClaims.n : '',
+		e: typeof currentClaims.e === 'string' ? currentClaims.e : 'AQAB',
+		use: typeof currentClaims.use === 'string' ? currentClaims.use : 'sig',
+		alg: typeof currentClaims.alg === 'string' ? currentClaims.alg : 'RS256',
+		kid: typeof currentClaims.kid === 'string' ? currentClaims.kid : 'key1',
+		typ: typeof currentClaims.typ === 'string' ? currentClaims.typ : 'JWT',
+		key: normalizedPem
+	};
+}
+
+function updateManualRawJsonPreview(): void {
+	if (!sourceManualRadio.checked) {
+		return;
+	}
+
+	const modelKey = buildManualKeyModelForPreview();
+	const preferredKeyRef = typeof modelKey.kid === 'string' && modelKey.kid.trim()
+		? `kid:${modelKey.kid.trim()}`
+		: 'index:0';
+	const previewModel = {
+		keys: [modelKey],
+		preferredKeyRef
+	};
+
+	rawJsonSection.style.display = 'block';
+	rawJsonContent.textContent = JSON.stringify(previewModel, null, 2);
+	rawJsonContent.style.display = 'none';
+	rawJsonToggle.textContent = getRawJsonShowLabel();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function selectBestJwk(jwksObject: Record<string, unknown>): { key: Record<string, unknown>; index: number } | null {
+	const keysValue = jwksObject.keys;
+	if (!Array.isArray(keysValue)) {
+		return null;
+	}
+	const jwkObjects = keysValue
+		.map((value, index) => ({ value, index }))
+		.filter((entry): entry is { value: Record<string, unknown>; index: number } => isRecord(entry.value));
+	if (jwkObjects.length === 0) {
+		return null;
+	}
+	const sigKey = jwkObjects.find(entry => entry.value.use === 'sig');
+	return sigKey ? { key: sigKey.value, index: sigKey.index } : { key: jwkObjects[0].value, index: jwkObjects[0].index };
+}
+
+function parseJWKSInput(jwksJson: string): { valid: boolean; error?: string; selectedJwk?: Record<string, unknown>; selectedJwkIndex?: number; normalizedJson?: string } {
+	const trimmed = jwksJson.trim();
+	if (!trimmed) {
+		return { valid: false, error: 'JWKS JSON is required' };
+	}
+
+	try {
+		const parsed = JSON.parse(trimmed);
+		if (!isRecord(parsed)) {
+			return { valid: false, error: 'Invalid JWKS format: root must be an object' };
+		}
+		const selected = selectBestJwk(parsed);
+		if (!selected) {
+			return { valid: false, error: 'Invalid JWKS format: keys array is missing or empty' };
+		}
+		return {
+			valid: true,
+			selectedJwk: selected.key,
+			selectedJwkIndex: selected.index,
+			normalizedJson: JSON.stringify(parsed)
+		};
+	} catch {
+		return { valid: false, error: 'Invalid JSON format for JWKS input' };
+	}
+}
+
+function updateJWKSPreviewFromInput(): void {
+	autoResizeTextarea(jwksJsonInput);
+	if (!jwksJsonInput.value.trim()) {
+		currentClaims = {};
+		renderClaims(currentClaims, true);
+		setJWKSStatus('Paste a JWKS JSON document to preview the selected key.', 'info', true);
+		return;
+	}
+
+	const parsed = parseJWKSInput(jwksJsonInput.value);
+	if (!parsed.valid || !parsed.selectedJwk) {
+		currentClaims = {};
+		renderClaims(currentClaims, true);
+		setJWKSStatus(parsed.error || 'Invalid JWKS JSON input', 'error', true);
+		return;
+	}
+
+	currentClaims = { ...parsed.selectedJwk };
+	const keySet = parsed.normalizedJson ? extractKeySetFromRawJson(parsed.normalizedJson) : [];
+	if (keySet.length > 0) {
+		renderGroupedKeyClaims(keySet);
+	} else {
+		renderClaims(currentClaims, true);
+	}
+	const selectedKid = typeof parsed.selectedJwk.kid === 'string' && parsed.selectedJwk.kid.trim()
+		? parsed.selectedJwk.kid
+		: '(none)';
+	const selectedAlg = typeof parsed.selectedJwk.alg === 'string' && parsed.selectedJwk.alg.trim()
+		? parsed.selectedJwk.alg
+		: '(unspecified)';
+	const selectedKty = typeof parsed.selectedJwk.kty === 'string' && parsed.selectedJwk.kty.trim()
+		? parsed.selectedJwk.kty
+		: '(unknown)';
+	const selectedIndex = typeof parsed.selectedJwkIndex === 'number' ? parsed.selectedJwkIndex : 0;
+	setJWKSStatus(`Valid JWKS. Selected keys[${selectedIndex}] kty=${selectedKty}, kid=${selectedKid}, alg=${selectedAlg}.`, 'success', true);
+}
+
+function applyReadOnlyJwkMode(key: any, mode: 'url' | 'jwks-json'): void {
+	keyNameInput.disabled = false;
+	setPublicKeyReadOnlyMode(true);
+	publicKeySection.style.display = 'none';
+	saveBtn.style.display = 'inline-block';
+	saveBtn.textContent = 'Save Changes';
+	manualMetadataSection.style.display = 'block';
+	rawJsonSection.style.display = 'block';
+	lastFetchedItem.style.display = 'none';
+	nextRefreshItem.style.display = 'none';
+
+	if (typeof key.rawJson === 'string' && key.rawJson.trim()) {
+		try {
+			rawJsonContent.textContent = JSON.stringify(JSON.parse(key.rawJson), null, 2);
+		} catch {
+			rawJsonContent.textContent = key.rawJson;
+		}
+	} else {
+		rawJsonContent.textContent = 'Raw JSON is not available for this key.';
+	}
+	rawJsonContent.style.display = 'none';
+	rawJsonToggle.textContent = getRawJsonShowLabel();
+
+	if (mode === 'url') {
+		refreshBtn.style.display = 'inline-block';
+		urlSection.style.display = 'block';
+		keyUrlReadonly.textContent = key.url || '';
+		keyUrlReadonly.style.display = 'block';
+		keyUrlInput.style.display = 'none';
+		urlHelp.style.display = 'none';
+
+		refreshSection.style.display = 'block';
+		refreshPeriodReadonly.style.display = 'none';
+		refreshPeriodSelect.style.display = 'block';
+		refreshPeriodSelect.value = key.refreshPeriod || 'weekly';
+		jwksJsonSection.style.display = 'none';
+		jwksJsonInput.disabled = false;
+		setJWKSStatus('', 'info', false);
+
+		if (key.lastFetchedAt) {
+			lastFetchedItem.style.display = 'block';
+			lastFetchedSpan.textContent = formatDateTime(key.lastFetchedAt);
+		}
+
+		if (key.nextRefreshAt) {
+			nextRefreshItem.style.display = 'block';
+			nextRefreshSpan.textContent = formatDateTime(key.nextRefreshAt);
+		}
+		return;
+	}
+
+	refreshBtn.style.display = 'none';
+	urlSection.style.display = 'none';
+	refreshSection.style.display = 'none';
+	jwksJsonSection.style.display = 'block';
+	jwksJsonInput.disabled = false;
+	autoResizeTextarea(jwksJsonInput);
+	setJWKSStatus('Edit JWKS JSON and save to update this key set.', 'info', true);
+}
+
 // Safe initial UI state until extension sends createMode/keyData.
 refreshBtn.style.display = 'none';
 deleteBtn.style.display = 'none';
 rawJsonSection.style.display = 'none';
+updateDescriptionCounter();
 
 // Event Listeners
 sourceUrlRadio.addEventListener('change', updateFormBasedOnSource);
+sourceJwksJsonRadio.addEventListener('change', updateFormBasedOnSource);
 sourceManualRadio.addEventListener('change', updateFormBasedOnSource);
+keyDescriptionInput.addEventListener('input', () => {
+	updateDescriptionCounter();
+});
 keyDataTextarea.addEventListener('input', () => {
 	void updateDerivedModulusClaim();
+	updateManualRawJsonPreview();
+});
+jwksJsonInput.addEventListener('input', () => {
+	if (sourceJwksJsonRadio.checked) {
+		updateJWKSPreviewFromInput();
+	}
 });
 
 claimsFields.addEventListener('input', (event) => {
@@ -298,6 +601,7 @@ claimsFields.addEventListener('input', (event) => {
 	if (target.dataset.claimKey === 'e') {
 		renderExponentHint(target);
 	}
+	updateManualRawJsonPreview();
 });
 
 saveBtn.addEventListener('click', () => {
@@ -319,7 +623,7 @@ deleteBtn.addEventListener('click', () => {
 rawJsonToggle.addEventListener('click', () => {
 	const visible = rawJsonContent.style.display === 'block';
 	rawJsonContent.style.display = visible ? 'none' : 'block';
-	rawJsonToggle.textContent = visible ? 'Show Raw JSON' : 'Hide Raw JSON';
+	rawJsonToggle.textContent = visible ? getRawJsonShowLabel() : getRawJsonHideLabel();
 });
 
 function normalizePemInput(value: string): string {
@@ -366,8 +670,21 @@ function validateManualPemInput(value: string): { valid: boolean; normalized: st
 	return { valid: true, normalized };
 }
 
+function getValidatedDescription(): { valid: boolean; value?: string; error?: string } {
+	const value = keyDescriptionInput.value.trim();
+	if (value.length > 50) {
+		return { valid: false, error: 'Description must be 50 characters or fewer' };
+	}
+	return { valid: true, value };
+}
+
+function updateDescriptionCounter(): void {
+	keyDescriptionCounter.textContent = `${keyDescriptionInput.value.length}/50`;
+}
+
 function updateFormBasedOnSource(): void {
 	const isUrl = sourceUrlRadio.checked;
+	const isJwksJson = sourceJwksJsonRadio.checked;
 	
 	if (isUrl) {
 		// Show URL fields
@@ -381,35 +698,65 @@ function updateFormBasedOnSource(): void {
 		refreshPeriodReadonly.style.display = 'none';
 		
 		// Disable key data textarea (will be fetched from URL)
-		keyDataTextarea.disabled = true;
+		setPublicKeyReadOnlyMode(true);
 		keyDataTextarea.placeholder = 'Key will be fetched from URL';
-		publicKeySection.style.display = isCreateMode ? 'none' : 'block';
+		publicKeySection.style.display = 'none';
+		jwksJsonSection.style.display = 'none';
+		setJWKSStatus('', 'info', false);
 		manualMetadataSection.style.display = isCreateMode ? 'none' : 'block';
+		keySelectionSection.style.display = 'none';
+		rawJsonSection.style.display = 'none';
+	} else if (isJwksJson) {
+		urlSection.style.display = 'none';
+		urlHelp.style.display = 'none';
+		refreshSection.style.display = 'none';
+
+		jwksJsonSection.style.display = 'block';
+		jwksJsonInput.disabled = false;
+		autoResizeTextarea(jwksJsonInput);
+
+		setPublicKeyReadOnlyMode(true);
+		keyDataTextarea.placeholder = 'Public key is derived from the selected JWKS key';
+		publicKeySection.style.display = 'none';
+		manualMetadataSection.style.display = 'block';
+		keySelectionSection.style.display = 'none';
+		rawJsonSection.style.display = isCreateMode ? 'none' : 'block';
+		updateJWKSPreviewFromInput();
 	} else {
 		// Hide URL fields
 		urlSection.style.display = 'none';
 		urlHelp.style.display = 'none';
 		refreshSection.style.display = 'none';
+		jwksJsonSection.style.display = 'none';
 		
 		// Enable key data textarea
-		keyDataTextarea.disabled = false;
+		setPublicKeyReadOnlyMode(false);
 		keyDataTextarea.placeholder = 'Paste PEM-encoded public key here';
 		publicKeySection.style.display = 'block';
 		manualMetadataSection.style.display = 'block';
+		keySelectionSection.style.display = 'none';
+		setJWKSStatus('', 'info', false);
 		ensureManualClaimDefaults(currentClaims);
 		renderClaims(currentClaims, false);
 		void updateDerivedModulusClaim();
+		updateManualRawJsonPreview();
 	}
 }
 
 function handleCreateKey(): void {
 	const name = keyNameInput.value.trim();
+	const description = getValidatedDescription();
 	ensureManualClaimDefaults(currentClaims);
 	const algorithm = (typeof currentClaims.alg === 'string' && currentClaims.alg.trim()) ? currentClaims.alg.trim() : 'RS256';
 	const keyType = (typeof currentClaims.kty === 'string' && currentClaims.kty.trim()) ? currentClaims.kty.trim() : 'RSA';
 	
 	if (!name) {
 		showError('Key name is required');
+		return;
+	}
+
+	if (!description.valid) {
+		showError(description.error || 'Invalid description');
 		return;
 	}
 
@@ -425,8 +772,22 @@ function handleCreateKey(): void {
 		vscodeApi.postMessage({
 			type: 'createURLKey',
 			name,
+			description: description.value,
 			url,
 			refreshPeriod
+		});
+	} else if (sourceJwksJsonRadio.checked) {
+		const parsedJwks = parseJWKSInput(jwksJsonInput.value);
+		if (!parsedJwks.valid || !parsedJwks.normalizedJson) {
+			showError(parsedJwks.error || 'Invalid JWKS JSON input');
+			return;
+		}
+
+		vscodeApi.postMessage({
+			type: 'createJWKSJsonKey',
+			name,
+			description: description.value,
+			jwksJson: parsedJwks.normalizedJson
 		});
 	} else {
 		// Create manual key
@@ -445,6 +806,7 @@ function handleCreateKey(): void {
 		vscodeApi.postMessage({
 			type: 'createManualKey',
 			name,
+			description: description.value,
 			keyData: validation.normalized,
 			algorithm,
 			keyType,
@@ -455,6 +817,7 @@ function handleCreateKey(): void {
 
 function handleUpdateKey(): void {
 	const name = keyNameInput.value.trim();
+	const description = getValidatedDescription();
 	ensureManualClaimDefaults(currentClaims);
 	const algorithm = (typeof currentClaims.alg === 'string' && currentClaims.alg.trim()) ? currentClaims.alg.trim() : 'RS256';
 	const keyType = (typeof currentClaims.kty === 'string' && currentClaims.kty.trim()) ? currentClaims.kty.trim() : 'RSA';
@@ -464,7 +827,12 @@ function handleUpdateKey(): void {
 		return;
 	}
 
-	if (!isUrlKey) {
+	if (!description.valid) {
+		showError(description.error || 'Invalid description');
+		return;
+	}
+
+	if (!isUrlKey && !isJwksJsonKey) {
 		const validation = validateManualPemInput(keyDataTextarea.value);
 		if (!validation.valid) {
 			showError(validation.error || 'Invalid public key');
@@ -480,6 +848,7 @@ function handleUpdateKey(): void {
 		vscodeApi.postMessage({
 			type: 'updateKey',
 			name,
+			description: description.value,
 			keyData: validation.normalized,
 			algorithm,
 			keyType,
@@ -488,9 +857,28 @@ function handleUpdateKey(): void {
 		return;
 	}
 
+	if (isJwksJsonKey) {
+		const parsedJwks = parseJWKSInput(jwksJsonInput.value);
+		if (!parsedJwks.valid || !parsedJwks.normalizedJson) {
+			showError(parsedJwks.error || 'Invalid JWKS JSON input');
+			return;
+		}
+
+		vscodeApi.postMessage({
+			type: 'updateKey',
+			name,
+			description: description.value,
+			keyData: keyDataTextarea.value,
+			algorithm,
+			jwksJson: parsedJwks.normalizedJson
+		});
+		return;
+	}
+
 	vscodeApi.postMessage({
 		type: 'updateKey',
 		name,
+		description: description.value,
 		keyData: keyDataTextarea.value,
 		algorithm,
 		refreshPeriod: refreshPeriodSelect.value
@@ -518,11 +906,14 @@ function enterCreateMode(): void {
 	isCreateMode = true;
 	currentKey = null;
 	isUrlKey = false;
+	isJwksJsonKey = false;
 	currentClaims = { ...DEFAULT_MANUAL_CLAIMS };
 	
 	// Update title and UI for create mode
 	keyTitle.textContent = 'Add New Validation Key';
 	keySource.style.display = 'none';
+	keyDescriptionInput.value = '';
+	updateDescriptionCounter();
 	
 	// Show source selection
 	sourceSelectionSection.style.display = 'block';
@@ -537,7 +928,7 @@ function enterCreateMode(): void {
 	lastFetchedItem.style.display = 'none';
 	nextRefreshItem.style.display = 'none';
 	rawJsonContent.style.display = 'none';
-	rawJsonToggle.textContent = 'Show Raw JSON';
+	rawJsonToggle.textContent = getRawJsonShowLabel();
 	
 	// Update save button text
 	saveBtn.textContent = 'Add Key';
@@ -549,14 +940,22 @@ function enterCreateMode(): void {
 	// Default new entry to Manual source for clearer UX.
 	sourceManualRadio.checked = true;
 	sourceUrlRadio.checked = false;
+	sourceJwksJsonRadio.checked = false;
+	jwksJsonInput.value = '';
+	autoResizeTextarea(jwksJsonInput);
+	setJWKSStatus('', 'info', false);
+	keySelectionSection.style.display = 'none';
+	rawJsonSection.style.display = 'block';
 	renderClaims(currentClaims, false);
 	void updateDerivedModulusClaim();
+	updateManualRawJsonPreview();
 	
 	// Initialize form state
 	updateFormBasedOnSource();
 }
 
 function renderClaims(claims: Record<string, unknown> | undefined, readOnly: boolean): void {
+	claimsFields.classList.remove('key-groups');
 	if (!claims || Object.keys(claims).length === 0) {
 		claimsFields.innerHTML = '';
 		return;
@@ -601,6 +1000,87 @@ function renderClaims(claims: Record<string, unknown> | undefined, readOnly: boo
 	}
 }
 
+function getClaimFieldHtml(claimKey: string, value: unknown, readOnly: boolean): string {
+	const commonName = CLAIM_NAME_DICTIONARY[claimKey] || claimKey.toUpperCase();
+	const label = `${commonName} (${claimKey})`;
+	let displayValue = '';
+	let editable = !readOnly && !NON_EDITABLE_MANUAL_CLAIMS.has(claimKey);
+	if (claimKey === 'key') {
+		displayValue = '(shown in Public Key section)';
+	} else if (claimKey === 'n') {
+		displayValue = typeof value === 'string' ? value : '';
+	} else if (typeof value === 'string') {
+		displayValue = value;
+	} else {
+		displayValue = JSON.stringify(value);
+		editable = false;
+	}
+
+	const valueHtml = `<input class="input" data-claim-key="${escapeHtml(claimKey)}" value="${escapeHtml(displayValue)}" ${editable ? '' : 'disabled'} />`;
+	const helpHtml = claimKey === 'e'
+		? '<div class="claim-hint">AQAB is Base64URL for exponent 65537 (common RSA public exponent).</div>'
+		: claimKey === 'n'
+			? '<div class="claim-hint">Managed by the Public Key PEM field and shown here as read-only.</div>'
+			: '';
+
+	return `
+		<div class="metadata-item">
+			<span class="metadata-label">${escapeHtml(label)}:</span>
+			${valueHtml}
+			${helpHtml}
+		</div>
+	`;
+}
+
+function renderGroupedKeyClaims(keys: Record<string, unknown>[]): void {
+	claimsFields.classList.add('key-groups');
+	if (!keys.length) {
+		claimsFields.innerHTML = '<p class="hint">No keys found in JWKS.</p>';
+		return;
+	}
+
+	claimsFields.innerHTML = keys.map((jwk, index) => {
+		const kid = typeof jwk.kid === 'string' && jwk.kid.trim() ? jwk.kid.trim() : '(none)';
+		const kty = typeof jwk.kty === 'string' && jwk.kty.trim() ? jwk.kty.trim() : '(unknown)';
+		const groupTitle = `Key ${index + 1} - kty=${kty}, kid=${kid}`;
+		const claimItems = Object.entries(jwk)
+			.map(([claimKey, value]) => getClaimFieldHtml(claimKey, value, true))
+			.join('');
+
+		return `
+			<div class="key-claims-group">
+				<div class="key-claims-title">${escapeHtml(groupTitle)}</div>
+				<div class="metadata-grid">${claimItems}</div>
+				<div class="metadata-item grouped-public-key-item">
+					<span class="metadata-label">Public Key:</span>
+					<textarea
+						class="textarea grouped-public-key"
+						readonly
+						data-group-public-key-index="${index}"
+					>Deriving from JWK...</textarea>
+				</div>
+			</div>
+		`;
+	}).join('');
+
+	void populateGroupedPublicKeys(keys);
+}
+
+function extractKeySetFromRawJson(rawJson: unknown): Record<string, unknown>[] {
+	if (typeof rawJson !== 'string' || !rawJson.trim()) {
+		return [];
+	}
+	try {
+		const parsed = JSON.parse(rawJson);
+		if (!isRecord(parsed) || !Array.isArray(parsed.keys)) {
+			return [];
+		}
+		return parsed.keys.filter(isRecord);
+	} catch {
+		return [];
+	}
+}
+
 function escapeHtml(value: string): string {
 	return value
 		.replaceAll('&', '&amp;')
@@ -613,6 +1093,7 @@ function escapeHtml(value: string): string {
 function loadKeyData(key: any): void {
 	currentKey = key;
 	isUrlKey = key.source === 'url';
+	isJwksJsonKey = key.source === 'jwks-json';
 	isCreateMode = false;
 
 	// Reset mode-specific sections before applying current key mode.
@@ -633,74 +1114,55 @@ function loadKeyData(key: any): void {
 	// Hide source selection (not in create mode)
 	sourceSelectionSection.style.display = 'none';
 	sourceUrlRadio.checked = isUrlKey;
-	sourceManualRadio.checked = !isUrlKey;
+	sourceJwksJsonRadio.checked = isJwksJsonKey;
+	sourceManualRadio.checked = !isUrlKey && !isJwksJsonKey;
 
 	// Update form
 	keyNameInput.value = key.name;
+	keyDescriptionInput.value = typeof key.description === 'string' ? key.description : '';
+	updateDescriptionCounter();
 	keyDataTextarea.value = key.keyData || '';
+	jwksJsonInput.value = typeof key.jwksJson === 'string' ? key.jwksJson : '';
+	autoResizeTextarea(jwksJsonInput);
 	publicKeySection.style.display = 'block';
 	currentClaims = (key.claims && typeof key.claims === 'object') ? { ...key.claims } : {};
-	renderClaims(currentClaims, isUrlKey);
+	renderPreferredKeyOptions();
+	if (isUrlKey || isJwksJsonKey) {
+		const keySet = extractKeySetFromRawJson(key.rawJson);
+		if (keySet.length > 0) {
+			renderGroupedKeyClaims(keySet);
+		} else {
+			renderClaims(currentClaims, true);
+		}
+	} else {
+		renderClaims(currentClaims, false);
+	}
 
 	// Disable editing for URL keys
 	if (isUrlKey) {
-		keyNameInput.disabled = false;
-		keyDataTextarea.disabled = true;
-		saveBtn.style.display = 'inline-block';
-		saveBtn.textContent = 'Save Name';
-		refreshBtn.style.display = 'inline-block';
-
-		// Show URL info (readonly)
-		urlSection.style.display = 'block';
-		keyUrlReadonly.textContent = key.url || '';
-		keyUrlReadonly.style.display = 'block';
-		keyUrlInput.style.display = 'none';
-		urlHelp.style.display = 'none';
-
-		refreshSection.style.display = 'block';
-		refreshPeriodReadonly.style.display = 'none';
-		refreshPeriodSelect.style.display = 'block';
-		refreshPeriodSelect.value = key.refreshPeriod || 'weekly';
-		manualMetadataSection.style.display = 'block';
-		rawJsonSection.style.display = 'block';
-		if (typeof key.rawJson === 'string' && key.rawJson.trim()) {
-			try {
-				rawJsonContent.textContent = JSON.stringify(JSON.parse(key.rawJson), null, 2);
-			} catch {
-				rawJsonContent.textContent = key.rawJson;
-			}
-		} else {
-			rawJsonContent.textContent = 'Raw JSON is not available for this key.';
-		}
-		rawJsonContent.style.display = 'none';
-		rawJsonToggle.textContent = 'Show Raw JSON';
-
-		// Show fetch times
-		if (key.lastFetchedAt) {
-			lastFetchedItem.style.display = 'block';
-			lastFetchedSpan.textContent = formatDateTime(key.lastFetchedAt);
-		}
-
-		if (key.nextRefreshAt) {
-			nextRefreshItem.style.display = 'block';
-			nextRefreshSpan.textContent = formatDateTime(key.nextRefreshAt);
-		}
+		applyReadOnlyJwkMode(key, 'url');
+	} else if (isJwksJsonKey) {
+		applyReadOnlyJwkMode(key, 'jwks-json');
 	} else {
 		keyNameInput.disabled = false;
-		keyDataTextarea.disabled = false;
+		setPublicKeyReadOnlyMode(false);
+		jwksJsonInput.disabled = false;
+		renderPreferredKeyOptions();
 		ensureManualClaimDefaults(currentClaims);
 		renderClaims(currentClaims, false);
 		void updateDerivedModulusClaim();
+		updateManualRawJsonPreview();
 		saveBtn.style.display = 'inline-block';
 		saveBtn.textContent = 'Save Changes';
 		refreshBtn.style.display = 'none';
 
 		urlSection.style.display = 'none';
 		refreshSection.style.display = 'none';
+		jwksJsonSection.style.display = 'none';
 		manualMetadataSection.style.display = 'block';
-		rawJsonSection.style.display = 'none';
+		rawJsonSection.style.display = 'block';
 		rawJsonContent.style.display = 'none';
-		rawJsonToggle.textContent = 'Show Raw JSON';
+		rawJsonToggle.textContent = getRawJsonShowLabel();
 		lastFetchedItem.style.display = 'none';
 		nextRefreshItem.style.display = 'none';
 	}

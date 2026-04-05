@@ -49,6 +49,13 @@ Integration tests for complete workflows.
 
 ### Utility Tests
 
+#### `keyManagerSelection.test.ts`
+Regression tests for key selection precedence and key-set editor data.
+- **Tests cover:**
+  - Explicit key override taking precedence over JWT `kid` match
+  - `kid` match and preferred fallback behavior
+  - URL/JWKS editor data preserving complete key-set metadata
+
 #### `webviewUtils.test.ts`
 Tests for webview utility functions.
 - **Tests cover:**
@@ -101,7 +108,7 @@ The test suite provides comprehensive coverage of:
    - Webview utilities
    - Asset management
 
-**Total: 220+ tests**
+**Total: 225+ tests**
 
 ## Test Structure
 
