@@ -277,11 +277,12 @@ textarea.form-input {
 }
 
 .key-action-btn.danger {
-	background: var(--vscode-errorForeground);
-	color: #fff;
+	background: rgba(244, 71, 71, 0.2);
+	color: #f44747;
+	border: 1px solid #f44747;
 	margin-left: auto;
 }
 
 .key-action-btn.danger:hover {
-	opacity: 0.8;
+	background: rgba(244, 71, 71, 0.3);
 }
