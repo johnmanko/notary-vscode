@@ -39,8 +39,6 @@ export interface ValidationKey {
 	description?: string;
 	/** Source type of the key */
 	source: KeySource;
-	/** Optional preferred key reference when a JWKS contains multiple keys */
-	preferredKeyRef?: string;
 	/** Base64-encoded public key */
 	keyData: string;
 	/** Timestamp when the key was created */

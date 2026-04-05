@@ -123,7 +123,7 @@ export class JwtViewerPanel {
 		const editorData = this._keyManager.getKeyEditorData(key);
 		const options = editorData.availableKeyOptions || [];
 		const material = this._keyManager.getValidationMaterial(key, tokenKid);
-		const fallbackSelected = editorData.preferredKeyRef || (options.length > 0 ? options[0].ref : undefined);
+		const fallbackSelected = options.length > 0 ? options[0].ref : undefined;
 
 		this._panel.webview.postMessage({
 			type: 'keyOptions',

@@ -30,7 +30,6 @@ export interface KeyEditorData {
 	algorithm?: string;
 	typ?: string;
 	kid?: string;
-	preferredKeyRef?: string;
 	availableKeyOptions?: Array<{ ref: string; label: string }>;
 }
 
@@ -40,7 +39,7 @@ export interface ValidationKeyMaterial {
 	selectedKid?: string;
 	algorithm?: string;
 	typ?: string;
-	selectionReason?: 'kid-match' | 'preferred' | 'single-key' | 'override';
+	selectionReason?: 'kid-match' | 'single-key' | 'override';
 	availableKeyOptions: Array<{ ref: string; label: string }>;
 }
 
@@ -102,18 +101,19 @@ function parseStoredJson(decoded: string): Record<string, unknown> | null {
 
 interface KeySetModel {
 	keys: Record<string, unknown>[];
-	preferredKeyRef?: string;
 }
 
-function normalizePreferredKeyRef(value: unknown): string | undefined {
-	if (typeof value !== 'string') {
-		return undefined;
+const RESERVED_KEYSET_FIELDS = new Set(['keys']);
+
+function sanitizeJwkClaims(record: Record<string, unknown>): Record<string, unknown> {
+	const sanitized = { ...record };
+	for (const field of RESERVED_KEYSET_FIELDS) {
+		delete sanitized[field];
 	}
-	const trimmed = value.trim();
-	return trimmed || undefined;
+	return sanitized;
 }
 
-function parseKeySetModel(decoded: string, fallbackPreferredKeyRef?: string): KeySetModel | null {
+function parseKeySetModel(decoded: string): KeySetModel | null {
 	const parsed = parseStoredJson(decoded);
 	if (!parsed) {
 		return null;
@@ -121,14 +121,12 @@ function parseKeySetModel(decoded: string, fallbackPreferredKeyRef?: string): Ke
 
 	if (Array.isArray(parsed.keys)) {
 		return {
-			keys: parsed.keys.filter(isJwkObject),
-			preferredKeyRef: normalizePreferredKeyRef(fallbackPreferredKeyRef) || normalizePreferredKeyRef(parsed.preferredKeyRef)
+			keys: parsed.keys.filter(isJwkObject).map(sanitizeJwkClaims)
 		};
 	}
 
 	return {
-		keys: [parsed],
-		preferredKeyRef: normalizePreferredKeyRef(fallbackPreferredKeyRef)
+		keys: [sanitizeJwkClaims(parsed)]
 	};
 }
 
@@ -352,17 +350,12 @@ export class KeyManager {
 			if (!claimsValidation.valid) {
 				return { success: false, error: claimsValidation.error || 'Invalid manual key claims' };
 			}
-			const preferredRef = typeof normalizedClaims.kid === 'string' && normalizedClaims.kid.trim()
-				? `kid:${normalizedClaims.kid.trim()}`
-				: 'index:0';
-
 			const key = await this.storageManager.addManualKey(
 				name.trim(),
 				pemValidation.normalized,
 				normalizedAlgorithm,
 				normalizedKeyType,
 				normalizedClaims,
-				preferredRef,
 				descriptionResult.value
 			);
 			return { success: true, key };
@@ -413,17 +406,12 @@ export class KeyManager {
 			if (jwkObjects.length === 0) {
 				return { success: false, error: 'No suitable keys found in JWKS' };
 			}
-			const preferredSigIndex = jwkObjects.findIndex(key => key.use === 'sig');
-			const preferredIndex = preferredSigIndex >= 0 ? preferredSigIndex : 0;
-			const preferredRef = getKeyRef(jwkObjects[preferredIndex], preferredIndex);
-
 			// Store the key
 			const key = await this.storageManager.addURLKey(
 				name.trim(),
 				url.trim(),
 				refreshPeriod,
 				jwkObjects,
-				preferredRef,
 				descriptionResult.value
 			);
 
@@ -460,15 +448,10 @@ export class KeyManager {
 			if (jwkObjects.length === 0) {
 				return { success: false, error: 'No suitable keys found in JWKS' };
 			}
-			const selectedIndex = jwkObjects.findIndex((candidate: Record<string, unknown>) => candidate === parsedResult.selectedJwk);
-			const resolvedIndex = selectedIndex >= 0 ? selectedIndex : 0;
-			const preferredRef = getKeyRef(jwkObjects[resolvedIndex], resolvedIndex);
-
 			const key = await this.storageManager.addJWKSJsonKey(
 				name.trim(),
 				parsedResult.normalizedJWKS,
 				jwkObjects,
-				preferredRef,
 				descriptionResult.value
 			);
 
@@ -505,17 +488,11 @@ export class KeyManager {
 				return { success: false, error: parsedResult.error || 'Invalid JWKS JSON input' };
 			}
 
-			const preferredMatch = resolveKeyByRef(parsedResult.jwkObjects, key.preferredKeyRef);
-			const preferredSigIndex = parsedResult.jwkObjects.findIndex(candidate => candidate.use === 'sig');
-			const preferredIndex = preferredMatch?.index ?? (preferredSigIndex >= 0 ? preferredSigIndex : 0);
-			const preferredRef = getKeyRef(parsedResult.jwkObjects[preferredIndex], preferredIndex);
-
 			const updated = await this.storageManager.updateJWKSJsonKey(
 				id,
 				name.trim(),
 				parsedResult.normalizedJWKS,
 				parsedResult.jwkObjects,
-				preferredRef,
 				descriptionResult.value
 			);
 
@@ -560,13 +537,8 @@ export class KeyManager {
 			if (jwkObjects.length === 0) {
 				return { success: false, error: 'No suitable keys found in JWKS' };
 			}
-			const preferredMatch = resolveKeyByRef(jwkObjects, key.preferredKeyRef);
-			const preferredSigIndex = jwkObjects.findIndex(candidate => candidate.use === 'sig');
-			const preferredIndex = preferredMatch?.index ?? (preferredSigIndex >= 0 ? preferredSigIndex : 0);
-			const preferredRef = getKeyRef(jwkObjects[preferredIndex], preferredIndex);
-
 			// Update the stored key
-			const updatedKey = await this.storageManager.updateURLKey(id, jwkObjects, preferredRef);
+			const updatedKey = await this.storageManager.updateURLKey(id, jwkObjects);
 			if (!updatedKey) {
 				return { success: false, error: 'Failed to update key' };
 			}
@@ -634,7 +606,7 @@ export class KeyManager {
 	/**
 	 * Update a manual validation key
 	 */
-	async updateManualKey(id: string, name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, preferredKeyRef?: string, description?: string): Promise<{ success: boolean; error?: string }> {
+	async updateManualKey(id: string, name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, description?: string): Promise<{ success: boolean; error?: string }> {
 		try {
 			if (!name || name.trim().length === 0) {
 				return { success: false, error: 'Key name is required' };
@@ -657,10 +629,6 @@ export class KeyManager {
 			if (!claimsValidation.valid) {
 				return { success: false, error: claimsValidation.error || 'Invalid manual key claims' };
 			}
-			const fallbackRef = typeof normalizedClaims.kid === 'string' && normalizedClaims.kid.trim()
-				? `kid:${normalizedClaims.kid.trim()}`
-				: 'index:0';
-
 			const result = await this.storageManager.updateManualKey(
 				id,
 				name.trim(),
@@ -668,7 +636,6 @@ export class KeyManager {
 				normalizedAlgorithm,
 				normalizedKeyType,
 				normalizedClaims,
-				preferredKeyRef || fallbackRef,
 				descriptionResult.value
 			);
 			if (!result) {
@@ -714,7 +681,7 @@ export class KeyManager {
 	/**
 	 * Update URL key editable settings (name + refresh period)
 	 */
-	async updateURLKeySettings(id: string, name: string, refreshPeriod: RefreshPeriod, preferredKeyRef?: string, description?: string): Promise<{ success: boolean; error?: string }> {
+	async updateURLKeySettings(id: string, name: string, refreshPeriod: RefreshPeriod, description?: string): Promise<{ success: boolean; error?: string }> {
 		try {
 			if (!name || name.trim().length === 0) {
 				return { success: false, error: 'Key name is required' };
@@ -733,7 +700,7 @@ export class KeyManager {
 				return { success: false, error: 'Cannot update URL settings for a manual key' };
 			}
 
-			const result = await this.storageManager.updateURLKeySettings(id, name.trim(), refreshPeriod, preferredKeyRef, descriptionResult.value);
+			const result = await this.storageManager.updateURLKeySettings(id, name.trim(), refreshPeriod, descriptionResult.value);
 			if (!result) {
 				return { success: false, error: 'Key not found or cannot be updated' };
 			}
@@ -747,21 +714,6 @@ export class KeyManager {
 		}
 	}
 
-	async updatePreferredKeyRef(id: string, preferredKeyRef?: string): Promise<{ success: boolean; error?: string }> {
-		try {
-			const result = await this.storageManager.updatePreferredKeyRef(id, preferredKeyRef);
-			if (!result) {
-				return { success: false, error: 'Key not found or cannot be updated' };
-			}
-			return { success: true };
-		} catch (error) {
-			return {
-				success: false,
-				error: error instanceof Error ? error.message : 'Failed to update preferred key selection'
-			};
-		}
-	}
-
 	/**
 	 * Get the decoded public key data
 	 */
@@ -769,27 +721,24 @@ export class KeyManager {
 		return this.storageManager.getDecodedKey(key);
 	}
 
-	getValidationMaterial(key: ValidationKey, tokenKid?: string, preferredKeyRefOverride?: string): { success: boolean; data?: ValidationKeyMaterial; error?: string } {
+	getValidationMaterial(key: ValidationKey, tokenKid?: string, selectedKeyRefOverride?: string): { success: boolean; data?: ValidationKeyMaterial; error?: string } {
 		const decoded = this.getDecodedKey(key);
-		const parsedModel = parseKeySetModel(decoded, key.preferredKeyRef);
+		const parsedModel = parseKeySetModel(decoded);
 
 		if (!parsedModel || parsedModel.keys.length === 0) {
 			return { success: false, error: 'No usable keys found in key set' };
 		}
 
 		const keyOptions = getKeyOptions(parsedModel.keys);
-		const overrideMatch = resolveKeyByRef(parsedModel.keys, preferredKeyRefOverride);
+		const overrideMatch = resolveKeyByRef(parsedModel.keys, selectedKeyRefOverride);
 		const kidMatch = resolveKeyByKid(parsedModel.keys, tokenKid);
-		const preferredMatch = resolveKeyByRef(parsedModel.keys, parsedModel.preferredKeyRef);
 		const singleKeyFallback = parsedModel.keys.length === 1 ? { key: parsedModel.keys[0], index: 0 } : null;
-		const selected = overrideMatch || kidMatch || preferredMatch || singleKeyFallback;
-		const selectionReason: 'kid-match' | 'preferred' | 'single-key' | 'override' = overrideMatch
+		const selected = overrideMatch || kidMatch || singleKeyFallback;
+		const selectionReason: 'kid-match' | 'single-key' | 'override' = overrideMatch
 			? 'override'
 			: kidMatch
 				? 'kid-match'
-				: preferredMatch
-					? 'preferred'
-					: 'single-key';
+				: 'single-key';
 
 		if (!selected) {
 			return {
@@ -847,7 +796,7 @@ export class KeyManager {
 
 	getKeyEditorData(key: ValidationKey): KeyEditorData {
 		const decoded = this.getDecodedKey(key);
-		const parsedModel = parseKeySetModel(decoded, key.preferredKeyRef);
+		const parsedModel = parseKeySetModel(decoded);
 
 		if (!parsedModel || parsedModel.keys.length === 0) {
 			return {
@@ -862,9 +811,8 @@ export class KeyManager {
 		}
 
 		const keyOptions = getKeyOptions(parsedModel.keys);
-		const preferredMatch = resolveKeyByRef(parsedModel.keys, parsedModel.preferredKeyRef)
-			|| { key: parsedModel.keys[0], index: 0 };
-		const selectedJwk = preferredMatch.key;
+		const selectedIndex = parsedModel.keys.findIndex(candidate => candidate.use === 'sig');
+		const selectedJwk = selectedIndex >= 0 ? parsedModel.keys[selectedIndex] : parsedModel.keys[0];
 
 		let decodedKey = '';
 		if (selectedJwk) {
@@ -891,7 +839,6 @@ export class KeyManager {
 			algorithm: typeof selectedJwk.alg === 'string' ? selectedJwk.alg : undefined,
 			typ: typeof selectedJwk.typ === 'string' ? selectedJwk.typ : undefined,
 			kid: typeof selectedJwk.kid === 'string' ? selectedJwk.kid : undefined,
-			preferredKeyRef: parsedModel.preferredKeyRef,
 			availableKeyOptions: keyOptions
 		};
 	}

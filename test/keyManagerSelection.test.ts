@@ -46,8 +46,8 @@ function createManager(): KeyManager {
 	return new KeyManager({} as never);
 }
 
-function createKeySetData(keys: Record<string, unknown>[], preferredKeyRef?: string): string {
-	return encodeToBase64(JSON.stringify({ keys, preferredKeyRef }));
+function createKeySetData(keys: Record<string, unknown>[]): string {
+	return encodeToBase64(JSON.stringify({ keys }));
 }
 
 suite('Key Manager Selection and Editor Data', () => {
@@ -57,8 +57,7 @@ suite('Key Manager Selection and Editor Data', () => {
 			id: 'selection-override',
 			name: 'Selection Override',
 			source: KeySource.JWKSJson,
-			keyData: createKeySetData([VALID_KEY_1, INVALID_KEY_3], 'kid:key1'),
-			preferredKeyRef: 'kid:key1',
+			keyData: createKeySetData([VALID_KEY_1, INVALID_KEY_3]),
 			createdAt: Date.now()
 		};
 
@@ -73,8 +72,7 @@ suite('Key Manager Selection and Editor Data', () => {
 			id: 'selection-kid',
 			name: 'Selection Kid Match',
 			source: KeySource.JWKSJson,
-			keyData: createKeySetData([VALID_KEY_1, INVALID_KEY_3], 'kid:key3'),
-			preferredKeyRef: 'kid:key3',
+			keyData: createKeySetData([VALID_KEY_1, INVALID_KEY_3]),
 			createdAt: Date.now()
 		};
 
@@ -85,22 +83,19 @@ suite('Key Manager Selection and Editor Data', () => {
 		assert.strictEqual(result.data?.selectionReason, 'kid-match');
 	});
 
-	test('getValidationMaterial should use preferred key when JWT kid is missing', () => {
+	test('getValidationMaterial should require override when JWT kid is missing for multi-key sets', () => {
 		const manager = createManager();
 		const key: ValidationKey = {
 			id: 'selection-preferred',
 			name: 'Selection Preferred',
 			source: KeySource.JWKSJson,
-			keyData: createKeySetData([VALID_KEY_1, VALID_KEY_2], 'kid:key2'),
-			preferredKeyRef: 'kid:key2',
+			keyData: createKeySetData([VALID_KEY_1, VALID_KEY_2]),
 			createdAt: Date.now()
 		};
 
 		const result = manager.getValidationMaterial(key);
-		assert.strictEqual(result.success, true);
-		assert.strictEqual(result.data?.selectedKid, 'key2');
-		assert.strictEqual(result.data?.selectedKeyRef, 'kid:key2');
-		assert.strictEqual(result.data?.selectionReason, 'preferred');
+		assert.strictEqual(result.success, false);
+		assert.ok((result.error || '').includes('no fallback key is selected'));
 	});
 
 	test('getKeyEditorData should expose complete URL key set and selected preferred key', () => {
@@ -113,13 +108,12 @@ suite('Key Manager Selection and Editor Data', () => {
 			refreshPeriod: RefreshPeriod.Weekly,
 			lastFetchedAt: Date.now(),
 			nextRefreshAt: Date.now() + 60000,
-			keyData: createKeySetData([VALID_KEY_1, VALID_KEY_2], 'kid:key2'),
-			preferredKeyRef: 'kid:key2',
+			keyData: createKeySetData([VALID_KEY_1, VALID_KEY_2]),
 			createdAt: Date.now()
 		};
 
 		const editorData = manager.getKeyEditorData(urlKey);
-		assert.strictEqual((editorData.claims.kid as string), 'key2');
+		assert.strictEqual((editorData.claims.kid as string), 'key1');
 		assert.strictEqual(editorData.availableKeyOptions?.length, 2);
 		assert.ok((editorData.decodedKey || '').includes('BEGIN PUBLIC KEY'));
 		const rawJson = editorData.rawJson ? JSON.parse(editorData.rawJson) : null;
@@ -135,14 +129,13 @@ suite('Key Manager Selection and Editor Data', () => {
 			name: 'JWKS Editor Data',
 			source: KeySource.JWKSJson,
 			rawJwksJson,
-			keyData: createKeySetData([VALID_KEY_1, VALID_KEY_2], 'kid:key2'),
-			preferredKeyRef: 'kid:key2',
+			keyData: createKeySetData([VALID_KEY_1, VALID_KEY_2]),
 			createdAt: Date.now()
 		};
 
 		const editorData = manager.getKeyEditorData(jwksKey);
 		assert.strictEqual(editorData.rawJson, rawJwksJson);
-		assert.strictEqual((editorData.claims.kid as string), 'key2');
+		assert.strictEqual((editorData.claims.kid as string), 'key1');
 		assert.strictEqual(editorData.availableKeyOptions?.length, 2);
 	});
 
@@ -166,8 +159,7 @@ suite('Key Manager Selection and Editor Data', () => {
 			id: 'manual-viewer-path',
 			name: 'Manual Viewer Path',
 			source: KeySource.Manual,
-			keyData: createKeySetData([manualJwk], `kid:${manualKid}`),
-			preferredKeyRef: `kid:${manualKid}`,
+			keyData: createKeySetData([manualJwk]),
 			createdAt: Date.now()
 		};
 
@@ -183,5 +175,24 @@ suite('Key Manager Selection and Editor Data', () => {
 
 		const validation = await validateJWTSignature(token, material.data?.publicKey || '');
 		assert.strictEqual(validation.valid, true);
+	});
+
+	test('getKeyEditorData should not expose preferredKeyRef in manual claims', () => {
+		const manager = createManager();
+		const legacyManualObject = {
+			...VALID_KEY_1,
+			key: '-----BEGIN PUBLIC KEY-----\nlegacy\n-----END PUBLIC KEY-----',
+			preferredKeyRef: 'kid:key1'
+		};
+		const key: ValidationKey = {
+			id: 'manual-legacy-claims',
+			name: 'Manual Legacy Claims',
+			source: KeySource.Manual,
+			keyData: encodeToBase64(JSON.stringify(legacyManualObject)),
+			createdAt: Date.now()
+		};
+
+		const editorData = manager.getKeyEditorData(key);
+		assert.strictEqual('preferredKeyRef' in editorData.claims, false);
 	});
 });

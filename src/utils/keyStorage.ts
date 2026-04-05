@@ -53,14 +53,6 @@ function sanitizeClaimValue(value: unknown, fallback: string): string {
 	return trimmed || fallback;
 }
 
-function sanitizePreferredKeyRef(value: unknown): string | undefined {
-	if (typeof value !== 'string') {
-		return undefined;
-	}
-	const trimmed = value.trim();
-	return trimmed || undefined;
-}
-
 function sanitizeDescription(value: unknown): string {
 	if (typeof value !== 'string') {
 		return '';
@@ -68,14 +60,13 @@ function sanitizeDescription(value: unknown): string {
 	return value.trim().slice(0, 50);
 }
 
-function buildKeySetModel(keys: Record<string, unknown>[], preferredKeyRef?: string): string {
+function buildKeySetModel(keys: Record<string, unknown>[]): string {
 	return JSON.stringify({
-		keys,
-		preferredKeyRef
+		keys
 	});
 }
 
-function buildManualKeyModel(publicKey: string, algorithm: string, keyType: string, claims?: Record<string, unknown>, preferredKeyRef?: string): string {
+function buildManualKeyModel(publicKey: string, algorithm: string, keyType: string, claims?: Record<string, unknown>): string {
 	const normalizedClaims = claims ? { ...claims } : {};
 	const modelKey = {
 		kty: sanitizeClaimValue(normalizedClaims.kty, keyType),
@@ -87,10 +78,7 @@ function buildManualKeyModel(publicKey: string, algorithm: string, keyType: stri
 		typ: sanitizeClaimValue(normalizedClaims.typ, 'JWT'),
 		key: normalizePemInput(publicKey)
 	};
-	const fallbackRef = typeof modelKey.kid === 'string' && modelKey.kid.trim()
-		? `kid:${modelKey.kid}`
-		: 'index:0';
-	return buildKeySetModel([modelKey], sanitizePreferredKeyRef(preferredKeyRef) || fallbackRef);
+	return buildKeySetModel([modelKey]);
 }
 
 /**
@@ -119,14 +107,13 @@ export class KeyStorageManager {
 	/**
 	 * Add a new manual validation key
 	 */
-	async addManualKey(name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, preferredKeyRef?: string, description?: string): Promise<ManualValidationKey> {
+	async addManualKey(name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, description?: string): Promise<ManualValidationKey> {
 		const key: ManualValidationKey = {
 			id: generateKeyId(),
 			name,
 			description: sanitizeDescription(description),
 			source: KeySource.Manual,
-			preferredKeyRef: sanitizePreferredKeyRef(preferredKeyRef),
-			keyData: encodeToBase64(buildManualKeyModel(publicKey, algorithm, keyType, claims, preferredKeyRef)),
+			keyData: encodeToBase64(buildManualKeyModel(publicKey, algorithm, keyType, claims)),
 			createdAt: Date.now()
 		};
 
@@ -145,7 +132,6 @@ export class KeyStorageManager {
 		url: string,
 		refreshPeriod: RefreshPeriod,
 		jwksKeys: Record<string, unknown>[],
-		preferredKeyRef?: string,
 		description?: string
 	): Promise<URLValidationKey> {
 		const now = Date.now();
@@ -156,8 +142,7 @@ export class KeyStorageManager {
 			source: KeySource.URL,
 			url,
 			refreshPeriod,
-			preferredKeyRef: sanitizePreferredKeyRef(preferredKeyRef),
-			keyData: encodeToBase64(buildKeySetModel(jwksKeys, sanitizePreferredKeyRef(preferredKeyRef))),
+			keyData: encodeToBase64(buildKeySetModel(jwksKeys)),
 			createdAt: now,
 			lastFetchedAt: now,
 			nextRefreshAt: calculateNextRefresh(refreshPeriod, now)
@@ -173,15 +158,14 @@ export class KeyStorageManager {
 	/**
 	 * Add a new direct JWKS JSON validation key
 	 */
-	async addJWKSJsonKey(name: string, rawJwksJson: string, jwksKeys: Record<string, unknown>[], preferredKeyRef?: string, description?: string): Promise<JWKSJsonValidationKey> {
+	async addJWKSJsonKey(name: string, rawJwksJson: string, jwksKeys: Record<string, unknown>[], description?: string): Promise<JWKSJsonValidationKey> {
 		const key: JWKSJsonValidationKey = {
 			id: generateKeyId(),
 			name,
 			description: sanitizeDescription(description),
 			source: KeySource.JWKSJson,
 			rawJwksJson,
-			preferredKeyRef: sanitizePreferredKeyRef(preferredKeyRef),
-			keyData: encodeToBase64(buildKeySetModel(jwksKeys, sanitizePreferredKeyRef(preferredKeyRef))),
+			keyData: encodeToBase64(buildKeySetModel(jwksKeys)),
 			createdAt: Date.now()
 		};
 
@@ -195,7 +179,7 @@ export class KeyStorageManager {
 	/**
 	 * Update an existing URL-based key with new key data
 	 */
-	async updateURLKey(id: string, jwksKeys: Record<string, unknown>[], preferredKeyRef?: string): Promise<URLValidationKey | undefined> {
+	async updateURLKey(id: string, jwksKeys: Record<string, unknown>[]): Promise<URLValidationKey | undefined> {
 		const keys = await this.getKeys();
 		const keyIndex = keys.findIndex(k => k.id === id);
 		
@@ -210,8 +194,7 @@ export class KeyStorageManager {
 
 		const urlKey = key as URLValidationKey;
 		const now = Date.now();
-		urlKey.preferredKeyRef = sanitizePreferredKeyRef(preferredKeyRef);
-		urlKey.keyData = encodeToBase64(buildKeySetModel(jwksKeys, sanitizePreferredKeyRef(preferredKeyRef)));
+		urlKey.keyData = encodeToBase64(buildKeySetModel(jwksKeys));
 		urlKey.lastFetchedAt = now;
 		urlKey.nextRefreshAt = calculateNextRefresh(urlKey.refreshPeriod, now);
 
@@ -222,7 +205,7 @@ export class KeyStorageManager {
 	/**
 	 * Update URL key editable settings without changing fetched key material
 	 */
-	async updateURLKeySettings(id: string, name: string, refreshPeriod: RefreshPeriod, preferredKeyRef?: string, description?: string): Promise<URLValidationKey | undefined> {
+	async updateURLKeySettings(id: string, name: string, refreshPeriod: RefreshPeriod, description?: string): Promise<URLValidationKey | undefined> {
 		const keys = await this.getKeys();
 		const keyIndex = keys.findIndex(k => k.id === id);
 
@@ -241,7 +224,6 @@ export class KeyStorageManager {
 			urlKey.description = sanitizeDescription(description);
 		}
 		urlKey.refreshPeriod = refreshPeriod;
-		urlKey.preferredKeyRef = sanitizePreferredKeyRef(preferredKeyRef);
 		urlKey.nextRefreshAt = calculateNextRefresh(refreshPeriod, Date.now());
 
 		await this.context.globalState.update(STORAGE_KEY, keys);
@@ -251,7 +233,7 @@ export class KeyStorageManager {
 	/**
 	 * Update an existing manual key
 	 */
-	async updateManualKey(id: string, name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, preferredKeyRef?: string, description?: string): Promise<ManualValidationKey | undefined> {
+	async updateManualKey(id: string, name: string, publicKey: string, algorithm: string = 'RS256', keyType: string = 'RSA', claims?: Record<string, unknown>, description?: string): Promise<ManualValidationKey | undefined> {
 		const keys = await this.getKeys();
 		const keyIndex = keys.findIndex(k => k.id === id);
 		
@@ -269,27 +251,13 @@ export class KeyStorageManager {
 		if (description !== undefined) {
 			manualKey.description = sanitizeDescription(description);
 		}
-		manualKey.preferredKeyRef = sanitizePreferredKeyRef(preferredKeyRef);
-		manualKey.keyData = encodeToBase64(buildManualKeyModel(publicKey, algorithm, keyType, claims, preferredKeyRef));
+		manualKey.keyData = encodeToBase64(buildManualKeyModel(publicKey, algorithm, keyType, claims));
 
 		await this.context.globalState.update(STORAGE_KEY, keys);
 		return manualKey;
 	}
 
-	async updatePreferredKeyRef(id: string, preferredKeyRef?: string): Promise<ValidationKey | undefined> {
-		const keys = await this.getKeys();
-		const keyIndex = keys.findIndex(k => k.id === id);
-
-		if (keyIndex === -1) {
-			return undefined;
-		}
-
-		keys[keyIndex].preferredKeyRef = sanitizePreferredKeyRef(preferredKeyRef);
-		await this.context.globalState.update(STORAGE_KEY, keys);
-		return keys[keyIndex];
-	}
-
-	async updateJWKSJsonKey(id: string, name: string, rawJwksJson: string, jwksKeys: Record<string, unknown>[], preferredKeyRef?: string, description?: string): Promise<JWKSJsonValidationKey | undefined> {
+	async updateJWKSJsonKey(id: string, name: string, rawJwksJson: string, jwksKeys: Record<string, unknown>[], description?: string): Promise<JWKSJsonValidationKey | undefined> {
 		const keys = await this.getKeys();
 		const keyIndex = keys.findIndex(k => k.id === id);
 
@@ -308,8 +276,7 @@ export class KeyStorageManager {
 			jwksKey.description = sanitizeDescription(description);
 		}
 		jwksKey.rawJwksJson = rawJwksJson;
-		jwksKey.preferredKeyRef = sanitizePreferredKeyRef(preferredKeyRef);
-		jwksKey.keyData = encodeToBase64(buildKeySetModel(jwksKeys, sanitizePreferredKeyRef(preferredKeyRef)));
+		jwksKey.keyData = encodeToBase64(buildKeySetModel(jwksKeys));
 
 		await this.context.globalState.update(STORAGE_KEY, keys);
 		return jwksKey;

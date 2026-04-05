@@ -68,7 +68,7 @@ export class KeyDetailsPanel {
 				} else if (message.type === 'createJWKSJsonKey') {
 					await this.handleCreateJWKSJsonKey(message.name, message.description, message.jwksJson);
 				} else if (message.type === 'updateKey') {
-					await this.handleUpdateKey(message.name, message.description, message.keyData, message.algorithm, message.refreshPeriod, message.keyType, message.claims, message.preferredKeyRef, message.jwksJson);
+					await this.handleUpdateKey(message.name, message.description, message.keyData, message.algorithm, message.refreshPeriod, message.keyType, message.claims, message.jwksJson);
 				} else if (message.type === 'deleteKey') {
 					await this.handleDeleteKey(message.id);
 				} else if (message.type === 'refreshKey') {
@@ -141,7 +141,6 @@ export class KeyDetailsPanel {
 				algorithm: editorData.algorithm,
 				typ: editorData.typ,
 				kid: editorData.kid,
-				preferredKeyRef: editorData.preferredKeyRef,
 				availableKeyOptions: editorData.availableKeyOptions,
 				url: isURLKey(key) ? key.url : undefined,
 				refreshPeriod: isURLKey(key) ? key.refreshPeriod : undefined,
@@ -193,7 +192,7 @@ export class KeyDetailsPanel {
 		}
 	}
 
-	private async handleUpdateKey(name: string, description: string, keyData: string, algorithm: string, refreshPeriod?: string, keyType?: string, claims?: Record<string, unknown>, preferredKeyRef?: string, jwksJson?: string): Promise<void> {
+	private async handleUpdateKey(name: string, description: string, keyData: string, algorithm: string, refreshPeriod?: string, keyType?: string, claims?: Record<string, unknown>, jwksJson?: string): Promise<void> {
 		if (!this._keyId) {
 			return;
 		}
@@ -204,10 +203,10 @@ export class KeyDetailsPanel {
 		}
 
 		const result = isURLKey(key)
-			? await this._keyManager.updateURLKeySettings(this._keyId, name, (refreshPeriod as RefreshPeriod) || key.refreshPeriod, preferredKeyRef, description)
+			? await this._keyManager.updateURLKeySettings(this._keyId, name, (refreshPeriod as RefreshPeriod) || key.refreshPeriod, description)
 			: isJWKSJsonKey(key)
 				? await this._keyManager.updateJWKSJsonKey(this._keyId, name, typeof jwksJson === 'string' ? jwksJson : key.rawJwksJson, description)
-				: await this._keyManager.updateManualKey(this._keyId, name, keyData, algorithm || 'RS256', keyType || 'RSA', claims, preferredKeyRef, description);
+				: await this._keyManager.updateManualKey(this._keyId, name, keyData, algorithm || 'RS256', keyType || 'RSA', claims, description);
 		if (result.success) {
 			vscode.window.showInformationMessage(isURLKey(key) ? 'URL key updated successfully' : 'Key updated successfully');
 			await this._onKeyChanged();

@@ -49,9 +49,9 @@ interface KeyOption {
 
 let currentKeyOptions: KeyOption[] = [];
 let keyOptionsDefaultRef: string | undefined;
-let keyOptionsDefaultReason: 'kid-match' | 'preferred' | 'single-key' | 'override' | undefined;
+let keyOptionsDefaultReason: 'kid-match' | 'single-key' | 'override' | undefined;
 
-function getSelectionReasonLabel(reason: 'kid-match' | 'preferred' | 'single-key' | 'override' | undefined): string {
+function getSelectionReasonLabel(reason: 'kid-match' | 'single-key' | 'override' | undefined): string {
 	if (reason === 'kid-match') {
 		return 'Using kid match';
 	}
@@ -360,7 +360,7 @@ window.addEventListener('message', (event: MessageEvent<{
 	keyId?: string;
 	options?: KeyOption[];
 	selectedKeyRef?: string;
-	selectionReason?: 'kid-match' | 'preferred' | 'single-key' | 'override';
+	selectionReason?: 'kid-match' | 'single-key' | 'override';
 	error?: string;
 }>) => {
 	const data = event.data;

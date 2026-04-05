@@ -207,10 +207,10 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA
 			const keys = await storage.getKeys();
 			assert.strictEqual(keys.length, 1);
 
-			const decodedModel = JSON.parse(decodeFromBase64(keys[0].keyData)) as { keys?: unknown[]; preferredKeyRef?: string };
+			const decodedModel = JSON.parse(decodeFromBase64(keys[0].keyData)) as { keys?: unknown[] };
 			assert.ok(Array.isArray(decodedModel.keys));
 			assert.strictEqual(decodedModel.keys?.length, 1);
-			assert.strictEqual(decodedModel.preferredKeyRef, 'kid:key1');
+			assert.strictEqual(Object.prototype.hasOwnProperty.call(decodedModel, 'preferredKeyRef'), false);
 		});
 
 		test('Should persist description and cap it at 50 characters', async () => {

@@ -420,12 +420,8 @@ function updateManualRawJsonPreview(): void {
 	}
 
 	const modelKey = buildManualKeyModelForPreview();
-	const preferredKeyRef = typeof modelKey.kid === 'string' && modelKey.kid.trim()
-		? `kid:${modelKey.kid.trim()}`
-		: 'index:0';
 	const previewModel = {
-		keys: [modelKey],
-		preferredKeyRef
+		keys: [modelKey]
 	};
 
 	rawJsonSection.style.display = 'block';
