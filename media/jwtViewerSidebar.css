@@ -224,18 +224,21 @@ textarea.form-input {
 }
 
 .key-badge.manual {
-	background: var(--vscode-charts-blue);
-	color: #fff;
+	background: rgba(156, 39, 176, 0.2);
+	color: #ba68c8;
+	border: 1px solid #ba68c8;
 }
 
 .key-badge.url {
-	background: var(--vscode-charts-green);
-	color: #fff;
+	background: rgba(0, 122, 204, 0.2);
+	color: #4fc3f7;
+	border: 1px solid #4fc3f7;
 }
 
 .key-badge.jwks-json {
-	background: var(--vscode-charts-orange);
-	color: #fff;
+	background: rgba(255, 152, 0, 0.2);
+	color: #ffb74d;
+	border: 1px solid #ffb74d;
 }
 
 .key-details {
