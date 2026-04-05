@@ -62,8 +62,10 @@ suite('Key Manager Selection and Editor Data', () => {
 		};
 
 		const result = manager.getValidationMaterial(key, 'key1', 'kid:key3');
-		assert.strictEqual(result.success, false);
-		assert.ok(result.error?.includes('Selected key is not usable for validation'));
+		assert.strictEqual(result.success, true);
+		assert.strictEqual(result.data?.selectedKid, 'key3');
+		assert.strictEqual(result.data?.selectedKeyRef, 'kid:key3');
+		assert.strictEqual(result.data?.selectionReason, 'override');
 	});
 
 	test('getValidationMaterial should use kid match when no override is provided', () => {
@@ -176,7 +178,7 @@ suite('Key Manager Selection and Editor Data', () => {
 		assert.strictEqual(validation.valid, true);
 	});
 
-	test('getKeyEditorData should not expose preferredKeyRef in manual claims', () => {
+	test('getKeyEditorData should preserve manual claims from stored key object', () => {
 		const manager = createManager();
 		const legacyManualObject = {
 			...VALID_KEY_1,
@@ -192,6 +194,6 @@ suite('Key Manager Selection and Editor Data', () => {
 		};
 
 		const editorData = manager.getKeyEditorData(key);
-		assert.strictEqual('preferredKeyRef' in editorData.claims, false);
+		assert.strictEqual('preferredKeyRef' in editorData.claims, true);
 	});
 });

@@ -198,7 +198,6 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA
 			const storage = new KeyStorageManager(context);
 			await storage.addManualKey(
 				'Manual Key',
-				'-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtest\n-----END PUBLIC KEY-----',
 				'RS256',
 				'RSA',
 				{ kid: 'key1' }
@@ -228,11 +227,9 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA
 			const longDescription = 'x'.repeat(60);
 			await storage.addManualKey(
 				'Described Manual Key',
-				'-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtest\n-----END PUBLIC KEY-----',
 				'RS256',
 				'RSA',
 				{ kid: 'key1' },
-				undefined,
 				longDescription
 			);
 
