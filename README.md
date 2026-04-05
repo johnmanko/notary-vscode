@@ -20,10 +20,12 @@ JWT Viewer with Remote Key Verification
 - **Public Key Validation**: Validate JWT signatures against saved public keys
 - **Multiple Key Sources**:
   - **OIDC/JWKS URLs**: Automatically fetch keys from OpenID Connect discovery endpoints
+   - **JWKS JSON Entry**: Paste full JWKS documents directly (stored as a key set)
   - **Manual Entry**: Add public keys directly in PEM or raw format
 - **Key Management**: Store, list, and delete validation keys from the sidebar
 - **Auto-Refresh**: URL-based keys can be configured to refresh automatically (daily, weekly, or monthly)
-- **Key Viewing**: Review stored public keys in decoded (PEM) format
+- **JWKS Key Selection**: JWT `kid` is used first, with optional manual override in the JWT Viewer
+- **Key Viewing**: Review stored key material and derived public keys in decoded (PEM) format
 
 ### 🎨 User Interface
 - **Sidebar View**: Quick access to open viewers and key management
@@ -54,6 +56,20 @@ Entry
 Edit
 ![Remote Server Key Edit](images/screenshots/06-server-edit.png)
 
+
+### JWKS Key
+
+Entry
+![JWKS Key Entry](images/screenshots/08-jwks-entry.png)
+
+Edit
+![JWKS Key Edit](images/screenshots/09-jwks-edit.png)
+
+JWT Viewer with JWKS Verification
+![Viewer and JWKS Verify](images/screenshots/10-jwks-viewer.png)
+![Viewer and Failed JWKS Verify](images/screenshots/11-jwks-failed-validation.png)
+
+
 ## Usage
 
 ### Viewing a JWT
@@ -66,17 +82,20 @@ Edit
 
 ### Managing Validation Keys
 
+All key creation now starts from the sidebar **Add Key** button, then you choose the source in the key details panel.
+
 #### Adding a Key from OIDC/JWKS URL
 
 1. Open the Notary sidebar from the activity bar
-2. Under "Validation Keys", enter a name for your key
-3. Select "Fetch from URL"
-4. Enter one of the following URL formats:
+2. Click **Add Key**
+3. Enter a name for your key
+4. Select **Fetch from URL**
+5. Enter one of the following URL formats:
    - **Base URL**: `https://example.com` (auto-discovers via .well-known)
    - **OpenID Configuration**: `https://example.com/.well-known/openid-configuration`
    - **Direct JWKS URL**: `https://example.com/.well-known/jwks.json`
-5. Choose a refresh period (Daily, Weekly, or Monthly)
-6. Click "Add Key"
+6. Choose a refresh period (Daily, Weekly, or Monthly)
+7. Click **Add Key**
 
 The extension will automatically discover the JWKS endpoint from base URLs by attempting:
 - OpenID Connect discovery via `/.well-known/openid-configuration`
@@ -85,9 +104,10 @@ The extension will automatically discover the JWKS endpoint from base URLs by at
 #### Adding a Manual Key
 
 1. Open the Notary sidebar
-2. Enter a name for your key
-3. Select "Enter Public Key Manually"
-4. Paste your public key in PEM format:
+2. Click **Add Key**
+3. Enter a name for your key
+4. Select **Manual Entry**
+5. Paste your public key in PEM format:
    ```
    -----BEGIN PUBLIC KEY-----
    MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx1dP8pZk6jJ6VY8Z9sR7
@@ -95,7 +115,33 @@ The extension will automatically discover the JWKS endpoint from base URLs by at
    ...
    -----END PUBLIC KEY-----
    ```
-5. Click "Add Key"
+6. Click **Add Key**
+
+#### Adding a Key from JWKS JSON
+
+1. Open the Notary sidebar
+2. Click **Add Key**
+3. Enter a name for your key
+4. Select **Paste JWKS JSON**
+5. Paste a full JWKS document, for example:
+    ```json
+    {
+       "keys": [
+          {
+             "kty": "RSA",
+             "n": "...",
+             "e": "AQAB",
+             "use": "sig",
+             "alg": "RS256",
+             "kid": "key1"
+          }
+       ]
+    }
+    ```
+6. Review the key preview and claims shown in the panel
+7. Click **Add Key**
+
+When editing a JWKS JSON key, you can update the pasted JWKS document and save changes. Notary stores the full key set and uses JWT `kid` matching during validation.
 
 Supported formats:
 - RSA public keys (`-----BEGIN PUBLIC KEY-----` or `-----BEGIN RSA PUBLIC KEY-----`)
@@ -161,15 +207,7 @@ npm run package
 
 ## Release Notes
 
-### 1.0.0
-
-Initial release of Notary:
-- JWT decoding with syntax highlighting
-- Public key validation support
-- OIDC/JWKS URL key fetching with auto-refresh
-- Manual public key entry
-- Multi-panel support
-- Comprehensive test suite (167 tests)
+See [CHANGELOG](./CHANGELOG.md)
 
 ## License
 
