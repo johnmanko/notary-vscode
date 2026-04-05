@@ -28,6 +28,7 @@ const keyNameInput = document.getElementById('key-name') as HTMLInputElement;
 const keyDescriptionInput = document.getElementById('key-description') as HTMLInputElement;
 const keyDescriptionCounter = document.getElementById('key-description-counter')!;
 const keyDataTextarea = document.getElementById('key-data') as HTMLTextAreaElement;
+const keyDataReadonly = document.getElementById('key-data-readonly')!;
 const publicKeySection = document.getElementById('public-key-section')!;
 const claimsFields = document.getElementById('claims-fields')!;
 const rawJsonSection = document.getElementById('raw-json-section')!;
@@ -275,13 +276,13 @@ async function derivePublicKeyPemFromJwk(record: Record<string, unknown>): Promi
 
 async function populateGroupedPublicKeys(keys: Record<string, unknown>[]): Promise<void> {
 	await Promise.all(keys.map(async (jwk, index) => {
-		const textarea = claimsFields.querySelector<HTMLTextAreaElement>(`textarea[data-group-public-key-index="${index}"]`);
-		if (!textarea) {
+		const publicKeyDisplay = claimsFields.querySelector<HTMLElement>(`[data-group-public-key-index="${index}"]`);
+		if (!publicKeyDisplay) {
 			return;
 		}
 
 		const pem = await derivePublicKeyPemFromJwk(jwk);
-		textarea.value = pem || 'Unavailable for this key.';
+		publicKeyDisplay.textContent = pem || 'Unavailable for this key.';
 	}));
 }
 
@@ -375,8 +376,14 @@ function setPublicKeyReadOnlyMode(readOnly: boolean): void {
 	keyDataTextarea.disabled = false;
 	if (readOnly) {
 		keyDataTextarea.classList.add('readonly-field');
+		keyDataTextarea.style.display = 'none';
+		keyDataReadonly.style.display = 'block';
+		keyDataReadonly.textContent = keyDataTextarea.value || 'Public key is managed by this source.';
 	} else {
 		keyDataTextarea.classList.remove('readonly-field');
+		keyDataTextarea.style.display = 'block';
+		keyDataReadonly.style.display = 'none';
+		keyDataReadonly.textContent = '';
 	}
 }
 
@@ -977,7 +984,9 @@ function renderClaims(claims: Record<string, unknown> | undefined, readOnly: boo
 			editable = false;
 		}
 
-		const valueHtml = `<input class="input" data-claim-key="${escapeHtml(key)}" value="${escapeHtml(displayValue)}" ${editable ? '' : 'disabled'} />`;
+		const valueHtml = editable
+			? `<input class="input" data-claim-key="${escapeHtml(key)}" value="${escapeHtml(displayValue)}" />`
+			: `<div class="readonly-field claim-readonly">${escapeHtml(displayValue)}</div>`;
 		const helpHtml = key === 'e'
 			? '<div class="claim-hint">AQAB is Base64URL for exponent 65537 (common RSA public exponent).</div>'
 			: key === 'n'
@@ -1016,7 +1025,9 @@ function getClaimFieldHtml(claimKey: string, value: unknown, readOnly: boolean):
 		editable = false;
 	}
 
-	const valueHtml = `<input class="input" data-claim-key="${escapeHtml(claimKey)}" value="${escapeHtml(displayValue)}" ${editable ? '' : 'disabled'} />`;
+	const valueHtml = editable
+		? `<input class="input" data-claim-key="${escapeHtml(claimKey)}" value="${escapeHtml(displayValue)}" />`
+		: `<div class="readonly-field claim-readonly">${escapeHtml(displayValue)}</div>`;
 	const helpHtml = claimKey === 'e'
 		? '<div class="claim-hint">AQAB is Base64URL for exponent 65537 (common RSA public exponent).</div>'
 		: claimKey === 'n'
@@ -1053,11 +1064,10 @@ function renderGroupedKeyClaims(keys: Record<string, unknown>[]): void {
 				<div class="metadata-grid">${claimItems}</div>
 				<div class="metadata-item grouped-public-key-item">
 					<span class="metadata-label">Public Key:</span>
-					<textarea
-						class="textarea grouped-public-key"
-						readonly
+					<pre
+						class="readonly-field grouped-public-key"
 						data-group-public-key-index="${index}"
-					>Deriving from JWK...</textarea>
+					>Deriving from JWK...</pre>
 				</div>
 			</div>
 		`;
@@ -1122,6 +1132,7 @@ function loadKeyData(key: any): void {
 	keyDescriptionInput.value = typeof key.description === 'string' ? key.description : '';
 	updateDescriptionCounter();
 	keyDataTextarea.value = key.keyData || '';
+	keyDataReadonly.textContent = keyDataTextarea.value || 'Public key is managed by this source.';
 	jwksJsonInput.value = typeof key.jwksJson === 'string' ? key.jwksJson : '';
 	autoResizeTextarea(jwksJsonInput);
 	publicKeySection.style.display = 'block';

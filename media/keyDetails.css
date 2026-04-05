@@ -139,6 +139,13 @@ body {
 	word-break: break-all;
 }
 
+.claim-readonly {
+	min-height: 33px;
+	line-height: 1.35;
+	display: flex;
+	align-items: center;
+}
+
 .help-text {
 	margin-top: 4px;
 	font-size: 11px;
@@ -228,8 +235,15 @@ body {
 	font-family: var(--vscode-editor-font-family, 'Menlo', 'Consolas', monospace);
 	font-size: 11px;
 	line-height: 1.35;
-	white-space: pre;
+	white-space: pre-wrap;
+	word-break: break-word;
 	overflow-x: auto;
+}
+
+#key-data-readonly {
+	min-height: 200px;
+	font-size: 12px;
+	line-height: 1.5;
 }
 
 .key-claims-title {
