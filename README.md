@@ -67,6 +67,8 @@ Edit
 
 JWT Viewer with JWKS Verification
 ![Viewer and JWKS Verify](images/screenshots/10-jwks-viewer.png)
+
+JWT Viewer with JWKS Failed Verification
 ![Viewer and Failed JWKS Verify](images/screenshots/11-jwks-failed-validation.png)
 
 
