@@ -1,0 +1,18 @@
+{
+  "name": "mini-idp",
+  "version": "1.0.0",
+  "description": "Minimal local OIDC/JWKS/JWT test issuer",
+  "type": "module",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "jose": "^5.9.6"
+  }
+}
