@@ -10,8 +10,11 @@
  */
 
 import * as assert from 'node:assert';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { getNonce, createAssetUris } from '../src/utils/webviewUtils';
+import { getMediaPathSegments, getMediaRootUri, getNonce, loadHtmlTemplate, createAssetUris } from '../src/utils/webviewUtils';
 import { getRawJsonToggleLabel } from '../src/webview/utils';
 
 suite('Webview Utils Test Suite', () => {
@@ -121,6 +124,95 @@ suite('Webview Utils Test Suite', () => {
 				uris2['{{STYLE_URI}}'],
 				'Different base names should produce different URIs'
 			);
+		});
+	});
+
+	suite('media path helpers', () => {
+		test('should prefer media when dist media folder does not exist', () => {
+			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notary-webview-'));
+			try {
+				const segments = getMediaPathSegments(vscode.Uri.file(tempDir));
+				assert.deepStrictEqual(segments, ['media']);
+			} finally {
+				fs.rmSync(tempDir, { recursive: true, force: true });
+			}
+		});
+
+		test('should prefer dist media when dist media folder exists', () => {
+			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notary-webview-'));
+			fs.mkdirSync(path.join(tempDir, 'dist', 'media'), { recursive: true });
+			try {
+				const segments = getMediaPathSegments(vscode.Uri.file(tempDir));
+				assert.deepStrictEqual(segments, ['dist', 'media']);
+			} finally {
+				fs.rmSync(tempDir, { recursive: true, force: true });
+			}
+		});
+
+		test('should build the media root uri from the selected media path', () => {
+			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notary-webview-'));
+			fs.mkdirSync(path.join(tempDir, 'dist', 'media'), { recursive: true });
+			try {
+				const mediaRootUri = getMediaRootUri(vscode.Uri.file(tempDir));
+				assert.ok(mediaRootUri.fsPath.endsWith(path.join('dist', 'media')));
+			} finally {
+				fs.rmSync(tempDir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	suite('loadHtmlTemplate', () => {
+		test('should load template content from media and replace placeholders', () => {
+			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notary-template-'));
+			const mediaDir = path.join(tempDir, 'media');
+			fs.mkdirSync(mediaDir, { recursive: true });
+			fs.writeFileSync(
+				path.join(mediaDir, 'sample.html'),
+				'<meta nonce="{{NONCE}}"><main>{{CSP_SOURCE}} {{TITLE}}</main>',
+				'utf8'
+			);
+
+			const mockWebview = {
+				cspSource: 'vscode-webview://sample-source'
+			} as vscode.Webview;
+
+			try {
+				const html = loadHtmlTemplate(
+					vscode.Uri.file(tempDir),
+					mockWebview,
+					'sample.html',
+					{ '{{TITLE}}': 'Hello' }
+				);
+
+				assert.ok(html.includes('vscode-webview://sample-source'));
+				assert.ok(html.includes('Hello'));
+				assert.ok(!html.includes('{{NONCE}}'));
+			} finally {
+				fs.rmSync(tempDir, { recursive: true, force: true });
+			}
+		});
+
+		test('should load template content from dist media when available', () => {
+			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notary-template-'));
+			const mediaDir = path.join(tempDir, 'dist', 'media');
+			fs.mkdirSync(mediaDir, { recursive: true });
+			fs.writeFileSync(path.join(mediaDir, 'dist-sample.html'), '<span>{{LABEL}}</span>', 'utf8');
+
+			const mockWebview = {
+				cspSource: 'unused'
+			} as vscode.Webview;
+
+			try {
+				const html = loadHtmlTemplate(
+					vscode.Uri.file(tempDir),
+					mockWebview,
+					'dist-sample.html',
+					{ '{{LABEL}}': 'Dist Media' }
+				);
+				assert.ok(html.includes('Dist Media'));
+			} finally {
+				fs.rmSync(tempDir, { recursive: true, force: true });
+			}
 		});
 	});
 

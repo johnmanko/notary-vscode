@@ -10,6 +10,7 @@
  */
 import * as vscode from 'vscode';
 import { ValidationKey, URLValidationKey, ManualValidationKey, JWKSJsonValidationKey, KeySource, RefreshPeriod, calculateNextRefresh } from '../types/keyManagement';
+import { normalizeManualClaims } from './keyManagerHelpers';
 
 const STORAGE_KEY = 'notary.validationKeys';
 
@@ -56,16 +57,10 @@ function buildKeySetModel(keys: Record<string, unknown>[]): string {
 }
 
 function buildManualKeyModel(algorithm: string, keyType: string, claims?: Record<string, unknown>): string {
-	const normalizedClaims = claims ? { ...claims } : {};
-	const modelKey = {
-		kty: sanitizeClaimValue(normalizedClaims.kty, keyType),
-		n: sanitizeClaimValue(normalizedClaims.n, ''),
-		e: sanitizeClaimValue(normalizedClaims.e, 'AQAB'),
-		use: sanitizeClaimValue(normalizedClaims.use, 'sig'),
-		alg: sanitizeClaimValue(normalizedClaims.alg, algorithm),
-		kid: sanitizeClaimValue(normalizedClaims.kid, 'key1'),
-		typ: sanitizeClaimValue(normalizedClaims.typ, 'JWT')
-	};
+	const normalizedClaims = normalizeManualClaims(algorithm, keyType, claims);
+	const modelKey = Object.fromEntries(
+		Object.entries(normalizedClaims).map(([key, value]) => [key, sanitizeClaimValue(value, '')])
+	);
 	return buildKeySetModel([modelKey]);
 }
 

@@ -16,7 +16,6 @@ import { suite, test } from 'mocha';
 import { KeyManager } from '../src/utils/keyManager';
 import { encodeToBase64 } from '../src/utils/keyStorage';
 import { JWKSJsonValidationKey, KeySource, RefreshPeriod, URLValidationKey, ValidationKey } from '../src/types/keyManagement';
-import { validateJWTSignature } from '../src/utils/jwtValidator';
 
 const VALID_RSA_N = 't5OyWWeUS4WVIPQGky-EfXuT3RlvWRACfjc5pt-Xfi2XhF-YOF_eL3Igz7Ck56fXCxTszSyk2-X_DQZDgT0i2LbvN_WXmixMnn9swMh_Q3TPF3cKxzK8AlOryFKAhaoXvmnjBGjKi40Nw3uRUSth0RD5vyEnAWblNkbJp1GEMJiZgD3o5xXe3z3k3YI9-msWI0Xyd_lUOpJ85MnZJuNyMS-437ZS7KlDMmb5xFIOLD3iU_ScHhKcKIZFfQxqBlwuG-2qShgylHH1XZiFxjKfGMRyFPr4y2RhmyPW-B1oIsrPbmIBocELKY8HDMFmsST2zRQuji9TPc8kqpbLXG4Sew';
 
@@ -34,17 +33,12 @@ const VALID_KEY_2: Record<string, unknown> = {
 	kid: 'key2'
 };
 
-const INVALID_KEY_3: Record<string, unknown> = {
-	kty: 'RSA',
-	n: 't5OyWWeUS4WVIPQGky-EfXuT3RlvWRACfjc5pt',
-	e: 'AQAB',
-	use: 'sig',
-	alg: 'RS256',
-	kid: 'key3'
-};
-
 function createManager(): KeyManager {
 	return new KeyManager({} as never);
+}
+
+function createManagerWithDependencies(dependencies: ConstructorParameters<typeof KeyManager>[1]): KeyManager {
+	return new KeyManager({} as never, dependencies);
 }
 
 function createManagerWithContext(initialKeys?: ValidationKey[]) {
@@ -128,318 +122,37 @@ async function withJsonServer(routes: Record<string, MockResponse>, run: (baseUr
 
 const VALID_PUBLIC_PEM = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'pem' }).toString();
 
-suite('Key Manager Selection and Editor Data', () => {
-	test('getValidationMaterial should prioritize explicit override over JWT kid match', () => {
-		const manager = createManager();
-		const key: ValidationKey = {
-			id: 'selection-override',
-			name: 'Selection Override',
-			source: KeySource.JWKSJson,
-			keyData: createKeySetData([VALID_KEY_1, INVALID_KEY_3]),
+suite('Key Manager Operations', () => {
+	test('getAllKeys and getKeyById should expose stored keys through the manager', async () => {
+		const manualKey: ValidationKey = {
+			id: 'stored-manual',
+			name: 'Stored Manual',
+			source: KeySource.Manual,
+			keyData: createKeySetData([VALID_KEY_1]),
 			createdAt: Date.now()
 		};
-
-		const result = manager.getValidationMaterial(key, 'key1', 'kid:key3');
-		assert.strictEqual(result.success, true);
-		assert.strictEqual(result.data?.selectedKid, 'key3');
-		assert.strictEqual(result.data?.selectedKeyRef, 'kid:key3');
-		assert.strictEqual(result.data?.selectionReason, 'override');
-	});
-
-	test('getValidationMaterial should use kid match when no override is provided', () => {
-		const manager = createManager();
-		const key: ValidationKey = {
-			id: 'selection-kid',
-			name: 'Selection Kid Match',
-			source: KeySource.JWKSJson,
-			keyData: createKeySetData([VALID_KEY_1, INVALID_KEY_3]),
-			createdAt: Date.now()
-		};
-
-		const result = manager.getValidationMaterial(key, 'key1');
-		assert.strictEqual(result.success, true);
-		assert.strictEqual(result.data?.selectedKid, 'key1');
-		assert.strictEqual(result.data?.selectedKeyRef, 'kid:key1');
-		assert.strictEqual(result.data?.selectionReason, 'kid-match');
-	});
-
-	test('getValidationMaterial should accept index-based override refs', () => {
-		const manager = createManager();
-		const key: ValidationKey = {
-			id: 'selection-index-override',
-			name: 'Selection Index Override',
-			source: KeySource.JWKSJson,
-			keyData: createKeySetData([
-				{ kty: 'RSA', n: VALID_RSA_N, e: 'AQAB', use: 'sig', alg: 'RS256' },
-				VALID_KEY_2
-			]),
-			createdAt: Date.now()
-		};
-
-		const result = manager.getValidationMaterial(key, undefined, 'index:1');
-		assert.strictEqual(result.success, true);
-		assert.strictEqual(result.data?.selectedKid, 'key2');
-		assert.strictEqual(result.data?.selectedKeyRef, 'kid:key2');
-		assert.strictEqual(result.data?.selectionReason, 'override');
-	});
-
-	test('getValidationMaterial should report missing kid matches when no fallback key is selected', () => {
-		const manager = createManager();
-		const key: ValidationKey = {
-			id: 'selection-kid-missing',
-			name: 'Selection Kid Missing',
-			source: KeySource.JWKSJson,
-			keyData: createKeySetData([VALID_KEY_1, VALID_KEY_2]),
-			createdAt: Date.now()
-		};
-
-		const result = manager.getValidationMaterial(key, 'missing-kid');
-		assert.strictEqual(result.success, false);
-		assert.ok((result.error || '').includes('No key with kid "missing-kid"'));
-	});
-
-	test('getValidationMaterial should require override when JWT kid is missing for multi-key sets', () => {
-		const manager = createManager();
-		const key: ValidationKey = {
-			id: 'selection-preferred',
-			name: 'Selection Preferred',
-			source: KeySource.JWKSJson,
-			keyData: createKeySetData([VALID_KEY_1, VALID_KEY_2]),
-			createdAt: Date.now()
-		};
-
-		const result = manager.getValidationMaterial(key);
-		assert.strictEqual(result.success, false);
-		assert.ok((result.error || '').includes('no fallback key is selected'));
-	});
-
-	test('getKeyEditorData should expose complete URL key set and selected preferred key', () => {
-		const manager = createManager();
 		const urlKey: URLValidationKey = {
-			id: 'url-key-editor',
-			name: 'URL Editor Data',
+			id: 'stored-url',
+			name: 'Stored URL',
 			source: KeySource.URL,
-			url: 'https://example.com/jwks',
-			refreshPeriod: RefreshPeriod.Weekly,
-			lastFetchedAt: Date.now(),
-			nextRefreshAt: Date.now() + 60000,
-			keyData: createKeySetData([VALID_KEY_1, VALID_KEY_2]),
-			createdAt: Date.now()
-		};
-
-		const editorData = manager.getKeyEditorData(urlKey);
-		assert.strictEqual((editorData.claims.kid as string), 'key1');
-		assert.strictEqual(editorData.availableKeyOptions?.length, 2);
-		assert.ok((editorData.decodedKey || '').includes('BEGIN PUBLIC KEY'));
-		const rawJson = editorData.rawJson ? JSON.parse(editorData.rawJson) : null;
-		assert.ok(rawJson && Array.isArray(rawJson.keys));
-		assert.strictEqual(rawJson.keys.length, 2);
-	});
-
-	test('getKeyEditorData should keep original raw JWKS JSON for jwks-json keys', () => {
-		const manager = createManager();
-		const rawJwksJson = JSON.stringify({ keys: [VALID_KEY_1, VALID_KEY_2] });
-		const jwksKey: JWKSJsonValidationKey = {
-			id: 'jwks-key-editor',
-			name: 'JWKS Editor Data',
-			source: KeySource.JWKSJson,
-			rawJwksJson,
-			keyData: createKeySetData([VALID_KEY_1, VALID_KEY_2]),
-			createdAt: Date.now()
-		};
-
-		const editorData = manager.getKeyEditorData(jwksKey);
-		assert.strictEqual(editorData.rawJson, rawJwksJson);
-		assert.strictEqual((editorData.claims.kid as string), 'key1');
-		assert.strictEqual(editorData.availableKeyOptions?.length, 2);
-	});
-
-	test('getKeyEditorData should expose fallback labels and refs when key metadata is missing', () => {
-		const manager = createManager();
-		const key: ValidationKey = {
-			id: 'editor-fallback-labels',
-			name: 'Editor Fallback Labels',
-			source: KeySource.URL,
-			keyData: createKeySetData([
-				{ n: VALID_RSA_N, e: 'AQAB' },
-				{ kty: 'RSA', kid: 'named-key', alg: 'RS256', n: VALID_RSA_N, e: 'AQAB' }
-			]),
 			url: 'https://example.com/jwks',
 			refreshPeriod: RefreshPeriod.Daily,
 			lastFetchedAt: Date.now(),
 			nextRefreshAt: Date.now() + 60_000,
-			createdAt: Date.now()
-		} as URLValidationKey;
-
-		const editorData = manager.getKeyEditorData(key);
-		assert.strictEqual(editorData.availableKeyOptions?.[0].ref, 'index:0');
-		assert.ok((editorData.availableKeyOptions?.[0].label || '').includes('kid=(none)'));
-		assert.ok((editorData.availableKeyOptions?.[0].label || '').includes('kty=(unknown)'));
-		assert.ok((editorData.availableKeyOptions?.[0].label || '').includes('alg=(unspecified)'));
-		assert.ok((editorData.rawJson || '').includes('keys'));
-	});
-
-	test('manual key model should validate via the same viewer path as other key sources', async () => {
-		const manager = createManager();
-		const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
-
-		const jose = await import('jose');
-		const publicJwk = await jose.exportJWK(publicKey);
-		const manualKid = 'manual-key-1';
-		const manualJwk: Record<string, unknown> = {
-			...publicJwk,
-			alg: 'RS256',
-			use: 'sig',
-			kid: manualKid,
-			typ: 'JWT'
-		};
-
-		const key: ValidationKey = {
-			id: 'manual-viewer-path',
-			name: 'Manual Viewer Path',
-			source: KeySource.Manual,
-			keyData: createKeySetData([manualJwk]),
+			keyData: createKeySetData([VALID_KEY_2]),
 			createdAt: Date.now()
 		};
+		const { manager } = createManagerWithContext([manualKey, urlKey]);
 
-		const token = await new jose.SignJWT({ sub: 'alice' })
-			.setProtectedHeader({ alg: 'RS256', typ: 'JWT', kid: manualKid })
-			.setIssuedAt()
-			.setExpirationTime('2h')
-			.sign(privateKey);
+		const allKeys = await manager.getAllKeys();
+		const foundKey = await manager.getKeyById('stored-url');
+		const missingKey = await manager.getKeyById('missing');
 
-		const material = manager.getValidationMaterial(key, manualKid);
-		assert.strictEqual(material.success, true);
-		assert.ok(material.data?.publicKey.includes('BEGIN PUBLIC KEY'));
-
-		const validation = await validateJWTSignature(token, material.data?.publicKey || '');
-		assert.strictEqual(validation.valid, true);
+		assert.strictEqual(allKeys.length, 2);
+		assert.strictEqual(foundKey?.id, 'stored-url');
+		assert.strictEqual(missingKey, undefined);
 	});
 
-	test('getKeyEditorData should preserve manual claims from stored key object', () => {
-		const manager = createManager();
-		const legacyManualObject = {
-			...VALID_KEY_1,
-			key: '-----BEGIN PUBLIC KEY-----\nlegacy\n-----END PUBLIC KEY-----',
-			preferredKeyRef: 'kid:key1'
-		};
-		const key: ValidationKey = {
-			id: 'manual-legacy-claims',
-			name: 'Manual Legacy Claims',
-			source: KeySource.Manual,
-			keyData: encodeToBase64(JSON.stringify(legacyManualObject)),
-			createdAt: Date.now()
-		};
-
-		const editorData = manager.getKeyEditorData(key);
-		assert.strictEqual('preferredKeyRef' in editorData.claims, true);
-	});
-
-		test('getValidationMaterial should fall back to the only key when there is a single-key set', () => {
-			const manager = createManager();
-			const key: ValidationKey = {
-				id: 'selection-single',
-				name: 'Selection Single Key',
-				source: KeySource.Manual,
-				keyData: createKeySetData([VALID_KEY_1]),
-				createdAt: Date.now()
-			};
-
-			const result = manager.getValidationMaterial(key);
-			assert.strictEqual(result.success, true);
-			assert.strictEqual(result.data?.selectionReason, 'single-key');
-			assert.strictEqual(result.data?.selectedKid, 'key1');
-		});
-
-		test('getValidationMaterial should reject unusable selected keys', () => {
-			const manager = createManager();
-			const key: ValidationKey = {
-				id: 'selection-invalid',
-				name: 'Selection Invalid',
-				source: KeySource.Manual,
-				keyData: createKeySetData([{ kid: 'invalid-key' }]),
-				createdAt: Date.now()
-			};
-
-			const result = manager.getValidationMaterial(key);
-			assert.strictEqual(result.success, false);
-			assert.ok((result.error || '').includes('not usable'));
-		});
-
-		test('getValidationMaterial should fall back to embedded PEM when JWK conversion fails', () => {
-			const manager = createManager();
-			const key: ValidationKey = {
-				id: 'selection-embedded-pem',
-				name: 'Selection Embedded PEM',
-				source: KeySource.Manual,
-				keyData: createKeySetData([{ kid: 'pem-key', key: VALID_PUBLIC_PEM }]),
-				createdAt: Date.now()
-			};
-
-			const result = manager.getValidationMaterial(key, 'pem-key');
-			assert.strictEqual(result.success, true);
-			assert.strictEqual(result.data?.publicKey, VALID_PUBLIC_PEM);
-		});
-
-		test('getPublicKeyForValidation should fall back to decoded key data when validation material cannot be derived', () => {
-			const manager = createManager();
-			const key: ValidationKey = {
-				id: 'selection-fallback',
-				name: 'Selection Fallback',
-				source: KeySource.Manual,
-				keyData: encodeToBase64('plain-text-key'),
-				createdAt: Date.now()
-			};
-
-			assert.strictEqual(manager.getPublicKeyForValidation(key), 'plain-text-key');
-		});
-
-		test('getPublicKeyForValidation should return derived public key when validation material succeeds', () => {
-			const manager = createManager();
-			const key: ValidationKey = {
-				id: 'selection-success',
-				name: 'Selection Success',
-				source: KeySource.Manual,
-				keyData: createKeySetData([VALID_KEY_1]),
-				createdAt: Date.now()
-			};
-
-			assert.ok(manager.getPublicKeyForValidation(key).includes('BEGIN PUBLIC KEY'));
-		});
-
-		test('getKeyEditorData should return decoded content when stored data is not usable JSON', () => {
-			const manager = createManager();
-			const key: ValidationKey = {
-				id: 'editor-invalid',
-				name: 'Editor Invalid',
-				source: KeySource.Manual,
-				keyData: encodeToBase64('not-json'),
-				createdAt: Date.now()
-			};
-
-			const editorData = manager.getKeyEditorData(key);
-			assert.deepStrictEqual(editorData.claims, {});
-			assert.strictEqual(editorData.decodedKey, 'not-json');
-		});
-
-		test('getKeyEditorData should fall back to the first key and empty decoded PEM when no sig key is marked', () => {
-			const manager = createManager();
-			const key: ValidationKey = {
-				id: 'editor-first-key-fallback',
-				name: 'Editor First Key Fallback',
-				source: KeySource.Manual,
-				keyData: createKeySetData([{ kid: 'first-key' }, { kid: 'second-key', use: 'enc' }]),
-				createdAt: Date.now()
-			};
-
-			const editorData = manager.getKeyEditorData(key);
-			assert.strictEqual(editorData.kid, 'first-key');
-			assert.strictEqual(editorData.decodedKey, '');
-			assert.strictEqual(editorData.rawJson, undefined);
-		});
-});
-
-suite('Key Manager Operations', () => {
 	test('addManualKey should persist a normalized manual key', async () => {
 		const { manager, getStoredKeys } = createManagerWithContext();
 		const result = await manager.addManualKey(
@@ -462,9 +175,48 @@ suite('Key Manager Operations', () => {
 		assert.strictEqual((await manager.addManualKey('', VALID_PUBLIC_PEM)).success, false);
 		assert.strictEqual((await manager.addManualKey('Manual', '')).success, false);
 		assert.strictEqual((await manager.addManualKey('Manual', 'not-a-pem')).success, false);
+		assert.strictEqual((await manager.addManualKey('Manual', '-----BEGIN PUBLIC KEY-----\n!!!\n-----END PUBLIC KEY-----')).success, false);
 		assert.strictEqual((await manager.addManualKey('Manual', VALID_PUBLIC_PEM, 'RS256', 'RSA', { e: 'bad+/value' })).success, false);
 		assert.strictEqual((await manager.addManualKey('Manual', VALID_PUBLIC_PEM, 'RS256', 'RSA', { e: 'AQAB', n: 'bad+/value' })).success, false);
 		assert.strictEqual((await manager.addManualKey('Manual', VALID_PUBLIC_PEM, 'RS256', 'RSA', undefined, 'x'.repeat(51))).success, false);
+	});
+
+	test('addManualKey should accept alternate PEM headers and normalize blank claims to defaults', async () => {
+		const { manager, getStoredKeys } = createManagerWithContext();
+		const rsaPem = '-----BEGIN RSA PUBLIC KEY-----\nQUJD\n-----END RSA PUBLIC KEY-----';
+		const ecPem = '-----BEGIN EC PUBLIC KEY-----\nQUJD\n-----END EC PUBLIC KEY-----';
+
+		const rsaResult = await manager.addManualKey('RSA Header', rsaPem, ' RS256 ', ' rsa ', {
+			kid: '   ',
+			alg: '   ',
+			use: '   ',
+			typ: '   ',
+			e: '   '
+		});
+		const ecResult = await manager.addManualKey('EC Header', ecPem, 'ES256', 'ec');
+
+		assert.strictEqual(rsaResult.success, true);
+		assert.strictEqual(ecResult.success, true);
+		const decodedFirst = JSON.parse(Buffer.from(getStoredKeys()[0].keyData, 'base64').toString('utf8')) as { keys: Array<Record<string, string>> };
+		assert.strictEqual(decodedFirst.keys[0].kid, 'key1');
+		assert.strictEqual(decodedFirst.keys[0].alg, 'RS256');
+		assert.strictEqual(decodedFirst.keys[0].use, 'sig');
+		assert.strictEqual(decodedFirst.keys[0].typ, 'JWT');
+		assert.strictEqual(decodedFirst.keys[0].e, 'AQAB');
+	});
+
+	test('addManualKey should surface storage failures through injected dependencies', async () => {
+		const manager = createManagerWithDependencies({
+			storageManager: {
+				addManualKey: async () => {
+					throw new Error('manual add failure');
+				}
+			} as never
+		});
+
+		const result = await manager.addManualKey('Manual', VALID_PUBLIC_PEM, 'RS256', 'RSA', { kid: 'manual-1', n: VALID_RSA_N, e: 'AQAB' });
+		assert.strictEqual(result.success, false);
+		assert.ok((result.error || '').includes('manual add failure'));
 	});
 
 	test('addJWKSJsonKey and updateJWKSJsonKey should validate and persist JSON input', async () => {
@@ -479,16 +231,70 @@ suite('Key Manager Operations', () => {
 
 		assert.strictEqual((await manager.addJWKSJsonKey('', JSON.stringify({ keys: [] }))).success, false);
 		assert.strictEqual((await manager.addJWKSJsonKey('Bad', 'not-json')).success, false);
+		assert.strictEqual((await manager.addJWKSJsonKey('Bad', JSON.stringify([]))).success, false);
+		assert.strictEqual((await manager.addJWKSJsonKey('Bad', JSON.stringify({}))).success, false);
+		assert.strictEqual((await manager.addJWKSJsonKey('Bad', JSON.stringify({ keys: [1, 2, 3] }))).success, false);
+		assert.strictEqual((await manager.addJWKSJsonKey('Bad', JSON.stringify({ keys: [VALID_KEY_1] }), 'x'.repeat(51))).success, false);
 		assert.strictEqual((await manager.updateJWKSJsonKey('missing', 'JWKS', JSON.stringify({ keys: [VALID_KEY_1] }))).success, false);
+	});
+
+	test('addJWKSJsonKey should surface storage failures', async () => {
+		const manager = createManager();
+		(manager as any).storageManager = {
+			addJWKSJsonKey: async () => {
+				throw new Error('add jwks failure');
+			}
+		};
+
+		const result = await manager.addJWKSJsonKey('JWKS', JSON.stringify({ keys: [VALID_KEY_1] }));
+		assert.strictEqual(result.success, false);
+		assert.ok((result.error || '').includes('add jwks failure'));
 	});
 
 	test('updateJWKSJsonKey should reject non-JWKS keys and invalid descriptions', async () => {
 		const { manager, getStoredKeys } = createManagerWithContext();
+		assert.strictEqual((await manager.updateJWKSJsonKey('missing', '', JSON.stringify({ keys: [VALID_KEY_1] }))).success, false);
 		await manager.addManualKey('Manual', VALID_PUBLIC_PEM, 'RS256', 'RSA', { kid: 'manual-1', n: VALID_RSA_N, e: 'AQAB' });
 		const manualId = getStoredKeys()[0].id;
 
 		assert.strictEqual((await manager.updateJWKSJsonKey(manualId, 'Wrong', JSON.stringify({ keys: [VALID_KEY_1] }))).success, false);
 		assert.strictEqual((await manager.updateJWKSJsonKey(manualId, 'Wrong', JSON.stringify({ keys: [VALID_KEY_1] }), 'x'.repeat(51))).success, false);
+		const { manager: jsonManager, getStoredKeys: getJsonKeys } = createManagerWithContext();
+		await jsonManager.addJWKSJsonKey('JWKS', JSON.stringify({ keys: [VALID_KEY_1] }));
+		const jsonId = getJsonKeys()[0].id;
+		assert.strictEqual((await jsonManager.updateJWKSJsonKey(jsonId, 'Wrong', JSON.stringify([]))).success, false);
+		assert.strictEqual((await jsonManager.updateJWKSJsonKey(jsonId, 'Wrong', JSON.stringify({}))).success, false);
+		assert.strictEqual((await jsonManager.updateJWKSJsonKey(jsonId, 'Wrong', JSON.stringify({ keys: [1, 2] }))).success, false);
+	});
+
+	test('updateJWKSJsonKey should handle storage update misses and thrown storage errors', async () => {
+		const manager = createManager();
+		const jwksKey: JWKSJsonValidationKey = {
+			id: 'jwks-update-stub',
+			name: 'JWKS Update Stub',
+			source: KeySource.JWKSJson,
+			rawJwksJson: JSON.stringify({ keys: [VALID_KEY_1] }),
+			keyData: createKeySetData([VALID_KEY_1]),
+			createdAt: Date.now()
+		};
+
+		(manager as any).storageManager = {
+			getKeyById: async () => jwksKey,
+			updateJWKSJsonKey: async () => undefined
+		};
+		const missingResult = await manager.updateJWKSJsonKey('jwks-update-stub', 'Updated', JSON.stringify({ keys: [VALID_KEY_2] }));
+		assert.strictEqual(missingResult.success, false);
+		assert.ok((missingResult.error || '').includes('cannot be updated'));
+
+		(manager as any).storageManager = {
+			getKeyById: async () => jwksKey,
+			updateJWKSJsonKey: async () => {
+				throw new Error('jwks update failure');
+			}
+		};
+		const thrownResult = await manager.updateJWKSJsonKey('jwks-update-stub', 'Updated', JSON.stringify({ keys: [VALID_KEY_2] }));
+		assert.strictEqual(thrownResult.success, false);
+		assert.ok((thrownResult.error || '').includes('jwks update failure'));
 	});
 
 	test('addURLKey and refreshURLKey should persist fetched JWKS content', async () => {
@@ -522,6 +328,29 @@ suite('Key Manager Operations', () => {
 		assert.strictEqual((await manager.addURLKey('URL Key', 'http://127.0.0.1:9', RefreshPeriod.Daily)).success, false);
 	});
 
+	test('addURLKey should reject JWKS responses that contain no object keys', async () => {
+		await withJsonServer({
+			'/non-object-jwks': { body: { keys: [1, 2, 3] } }
+		}, async (baseUrl) => {
+			const { manager } = createManagerWithContext();
+			const result = await manager.addURLKey('URL Key', `${baseUrl}/non-object-jwks`, RefreshPeriod.Daily);
+			assert.strictEqual(result.success, false);
+			assert.ok((result.error || '').includes('No suitable keys found'));
+		});
+	});
+
+	test('addURLKey should surface thrown fetch errors through injected dependencies', async () => {
+		const manager = createManagerWithDependencies({
+			fetchKeys: async () => {
+				throw new Error('url add fetch failure');
+			}
+		});
+
+		const result = await manager.addURLKey('URL Key', 'https://example.com/jwks', RefreshPeriod.Daily);
+		assert.strictEqual(result.success, false);
+		assert.ok((result.error || '').includes('url add fetch failure'));
+	});
+
 	test('refreshURLKey should handle missing, wrong-source, and failed-fetch cases', async () => {
 		const { manager, getStoredKeys } = createManagerWithContext();
 		assert.strictEqual((await manager.refreshURLKey('missing')).success, false);
@@ -542,6 +371,28 @@ suite('Key Manager Operations', () => {
 		};
 		const failureContext = createManagerWithContext([failingUrlKey]);
 		assert.strictEqual((await failureContext.manager.refreshURLKey('failing-url')).success, false);
+	});
+
+	test('refreshURLKey should reject JWKS responses that contain no object keys', async () => {
+		await withJsonServer({
+			'/non-object-jwks': { body: { keys: [1, 2, 3] } }
+		}, async (baseUrl) => {
+			const urlKey: URLValidationKey = {
+				id: 'non-object-refresh',
+				name: 'Non Object Refresh',
+				source: KeySource.URL,
+				url: `${baseUrl}/non-object-jwks`,
+				refreshPeriod: RefreshPeriod.Daily,
+				keyData: createKeySetData([VALID_KEY_1]),
+				createdAt: Date.now(),
+				lastFetchedAt: Date.now(),
+				nextRefreshAt: Date.now() - 1
+			};
+			const { manager } = createManagerWithContext([urlKey]);
+			const result = await manager.refreshURLKey('non-object-refresh');
+			assert.strictEqual(result.success, false);
+			assert.ok((result.error || '').includes('No suitable keys found'));
+		});
 	});
 
 	test('refreshURLKey should handle storage update misses and thrown storage errors', async () => {

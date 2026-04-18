@@ -5,3 +5,5 @@ node_modules
 .vscode-test/
 *.vsix
 **/node_modules
+coverage
+.DS_Store

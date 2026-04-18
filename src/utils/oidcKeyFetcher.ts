@@ -116,28 +116,48 @@ function selectBestKey(jwks: JWKS): JWK | undefined {
  */
 async function discoverJwksUrl(baseUrl: string): Promise<string> {
 	const parsed = new URL(baseUrl);
-	
-	// If URL already points to jwks.json, use it directly
-	if (parsed.pathname.includes('jwks.json')) {
-		return baseUrl;
-	}
-	
-	// If URL points to openid-configuration, fetch it to get jwks_uri
-	if (parsed.pathname.includes('openid-configuration')) {
+	const path = parsed.pathname || '/';
+	const isRootContext = path === '/' || path.trim().length === 0;
+
+	// If URL points to openid-configuration, fetch it to get jwks_uri.
+	if (path.includes('openid-configuration')) {
 		const configResponse = await httpGet(baseUrl);
 		const config = JSON.parse(configResponse);
-		if (config.jwks_uri) {
+		if (typeof config.jwks_uri === 'string' && config.jwks_uri.trim()) {
 			return config.jwks_uri;
 		}
 		throw new Error('No jwks_uri found in OpenID configuration');
 	}
+
+	// For non-root URLs, assume direct JWKS endpoint first.
+	if (!isRootContext) {
+		try {
+			const directResponse = await httpGet(baseUrl);
+			const parsedResponse = JSON.parse(directResponse);
+
+			if (parsedResponse && Array.isArray(parsedResponse.keys)) {
+				return baseUrl;
+			}
+
+			if (parsedResponse && typeof parsedResponse.jwks_uri === 'string' && parsedResponse.jwks_uri.trim()) {
+				return parsedResponse.jwks_uri;
+			}
+		} catch {
+			// Fall back to root-context discovery below.
+		}
+	}
 	
+	// If URL already points to jwks.json, use it directly
+	if (path.includes('jwks.json')) {
+		return baseUrl;
+	}
+
 	// For base URLs, try .well-known/openid-configuration
 	const wellKnownUrl = `${parsed.protocol}//${parsed.host}/.well-known/openid-configuration`;
 	try {
 		const configResponse = await httpGet(wellKnownUrl);
 		const config = JSON.parse(configResponse);
-		if (config.jwks_uri) {
+		if (typeof config.jwks_uri === 'string' && config.jwks_uri.trim()) {
 			return config.jwks_uri;
 		}
 	} catch {

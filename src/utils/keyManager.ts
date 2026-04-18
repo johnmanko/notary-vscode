@@ -9,10 +9,22 @@
  * SPDX-License-Identifier: GPL-3.0
  */
 import * as vscode from 'vscode';
-import * as crypto from 'node:crypto';
 import { ValidationKey, isURLKey, isJWKSJsonKey, needsRefresh, RefreshPeriod } from '../types/keyManagement';
 import { KeyStorageManager } from './keyStorage';
-import { fetchOIDCKeys } from './oidcKeyFetcher';
+import { FetchResult, fetchOIDCKeys } from './oidcKeyFetcher';
+import {
+	buildKeyEditorData,
+	getErrorMessage,
+	getValidationMaterialFromDecoded,
+	isJwkObject,
+	normalizeDescription,
+	normalizeManualClaims,
+	parseJWKSJsonInput,
+	validateManualClaims,
+	validateManualPemInput
+} from './keyManagerHelpers';
+
+export type { KeyEditorData, ValidationKeyMaterial } from './keyManagerHelpers';
 
 /**
  * Result of a key operation
@@ -23,255 +35,25 @@ export interface KeyOperationResult {
 	error?: string;
 }
 
-export interface KeyEditorData {
-	claims: Record<string, unknown>;
-	rawJson?: string;
-	decodedKey: string;
-	algorithm?: string;
-	typ?: string;
-	kid?: string;
-	availableKeyOptions?: Array<{ ref: string; label: string }>;
-}
+type KeyStorageLike = Pick<
+	KeyStorageManager,
+	'getKeys' |
+	'getKeyById' |
+	'addManualKey' |
+	'addURLKey' |
+	'addJWKSJsonKey' |
+	'updateURLKey' |
+	'updateURLKeySettings' |
+	'updateManualKey' |
+	'updateJWKSJsonKey' |
+	'updateKeyName' |
+	'deleteKey' |
+	'getDecodedKey'
+>;
 
-export interface ValidationKeyMaterial {
-	publicKey: string;
-	selectedKeyRef: string;
-	selectedKid?: string;
-	algorithm?: string;
-	typ?: string;
-	selectionReason?: 'kid-match' | 'single-key' | 'override';
-	availableKeyOptions: Array<{ ref: string; label: string }>;
-}
-
-function normalizePemInput(value: string): string {
-	return value
-		.trim()
-		.replaceAll('\r\n', '\n')
-		.replaceAll(String.raw`\n`, '\n');
-}
-
-function validateManualPemInput(value: string): { valid: boolean; normalized: string; error?: string } {
-	const normalized = normalizePemInput(value);
-
-	if (!normalized) {
-		return { valid: false, normalized, error: 'Public key is required' };
-	}
-
-	const supportedHeaders = [
-		{ begin: '-----BEGIN PUBLIC KEY-----', end: '-----END PUBLIC KEY-----' },
-		{ begin: '-----BEGIN RSA PUBLIC KEY-----', end: '-----END RSA PUBLIC KEY-----' },
-		{ begin: '-----BEGIN EC PUBLIC KEY-----', end: '-----END EC PUBLIC KEY-----' }
-	];
-
-	const headerMatch = supportedHeaders.find(h => normalized.includes(h.begin) && normalized.includes(h.end));
-	if (!headerMatch) {
-		return {
-			valid: false,
-			normalized,
-			error: 'Invalid PEM format. Expected BEGIN/END PUBLIC KEY block.'
-		};
-	}
-
-	const beginIndex = normalized.indexOf(headerMatch.begin) + headerMatch.begin.length;
-	const endIndex = normalized.indexOf(headerMatch.end);
-	const base64Body = normalized.slice(beginIndex, endIndex).replaceAll('\n', '').trim();
-
-	if (!base64Body || !/^[A-Za-z0-9+/=]+$/.test(base64Body)) {
-		return {
-			valid: false,
-			normalized,
-			error: 'Invalid PEM body. Only base64 key content is allowed between headers.'
-		};
-	}
-
-	return { valid: true, normalized };
-}
-
-function parseStoredJson(decoded: string): Record<string, unknown> | null {
-	try {
-		const parsed = JSON.parse(decoded);
-		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-			return parsed as Record<string, unknown>;
-		}
-		return null;
-	} catch {
-		return null;
-	}
-}
-
-interface KeySetModel {
-	keys: Record<string, unknown>[];
-}
-
-const RESERVED_KEYSET_FIELDS = new Set(['keys']);
-
-function sanitizeJwkClaims(record: Record<string, unknown>): Record<string, unknown> {
-	const sanitized = { ...record };
-	for (const field of RESERVED_KEYSET_FIELDS) {
-		delete sanitized[field];
-	}
-	return sanitized;
-}
-
-function parseKeySetModel(decoded: string): KeySetModel | null {
-	const parsed = parseStoredJson(decoded);
-	if (!parsed) {
-		return null;
-	}
-
-	if (Array.isArray(parsed.keys)) {
-		return {
-			keys: parsed.keys.filter(isJwkObject).map(sanitizeJwkClaims)
-		};
-	}
-
-	return {
-		keys: [sanitizeJwkClaims(parsed)]
-	};
-}
-
-function getKeyRef(jwk: Record<string, unknown>, index: number): string {
-	if (typeof jwk.kid === 'string' && jwk.kid.trim()) {
-		return `kid:${jwk.kid.trim()}`;
-	}
-	return `index:${index}`;
-}
-
-function getKeyOptionLabel(jwk: Record<string, unknown>, index: number): string {
-	const kid = typeof jwk.kid === 'string' && jwk.kid.trim() ? jwk.kid.trim() : '(none)';
-	const kty = typeof jwk.kty === 'string' && jwk.kty.trim() ? jwk.kty.trim() : '(unknown)';
-	const alg = typeof jwk.alg === 'string' && jwk.alg.trim() ? jwk.alg.trim() : '(unspecified)';
-	return `keys[${index}] kty=${kty}, kid=${kid}, alg=${alg}`;
-}
-
-function getKeyOptions(keys: Record<string, unknown>[]): Array<{ ref: string; label: string }> {
-	return keys.map((jwk, index) => ({
-		ref: getKeyRef(jwk, index),
-		label: getKeyOptionLabel(jwk, index)
-	}));
-}
-
-function resolveKeyByKid(keys: Record<string, unknown>[], kid?: string): { key: Record<string, unknown>; index: number } | null {
-	if (!kid) {
-		return null;
-	}
-	const matchIndex = keys.findIndex(jwk => typeof jwk.kid === 'string' && jwk.kid === kid);
-	if (matchIndex === -1) {
-		return null;
-	}
-	return { key: keys[matchIndex], index: matchIndex };
-}
-
-function resolveKeyByRef(keys: Record<string, unknown>[], preferredRef?: string): { key: Record<string, unknown>; index: number } | null {
-	if (!preferredRef) {
-		return null;
-	}
-	if (preferredRef.startsWith('kid:')) {
-		return resolveKeyByKid(keys, preferredRef.slice(4));
-	}
-	if (preferredRef.startsWith('index:')) {
-		const index = Number.parseInt(preferredRef.slice(6), 10);
-		if (!Number.isNaN(index) && index >= 0 && index < keys.length) {
-			return { key: keys[index], index };
-		}
-	}
-	return null;
-}
-
-function sanitizeClaim(value: unknown, fallback: string): string {
-	if (typeof value !== 'string') {
-		return fallback;
-	}
-	const trimmed = value.trim();
-	return trimmed || fallback;
-}
-
-function isBase64Url(value: string): boolean {
-	return /^[A-Za-z0-9_-]+$/.test(value);
-}
-
-function normalizeManualClaims(
-	algorithm: string,
-	keyType: string,
-	claims?: Record<string, unknown>
-): Record<string, string> {
-	const source = claims ?? {};
-	return {
-		kty: sanitizeClaim(source.kty, keyType),
-		n: sanitizeClaim(source.n, ''),
-		e: sanitizeClaim(source.e, 'AQAB'),
-		use: sanitizeClaim(source.use, 'sig'),
-		alg: sanitizeClaim(source.alg, algorithm),
-		kid: sanitizeClaim(source.kid, 'key1'),
-		typ: sanitizeClaim(source.typ, 'JWT')
-	};
-}
-
-function validateManualClaims(claims: Record<string, string>): { valid: boolean; error?: string } {
-	if (!claims.e) {
-		return { valid: false, error: 'Exponent (e) is required and must be Base64URL encoded.' };
-	}
-	if (!isBase64Url(claims.e)) {
-		return { valid: false, error: 'Exponent (e) must be Base64URL encoded (characters A-Z, a-z, 0-9, -, _).' };
-	}
-	if (claims.n && !isBase64Url(claims.n)) {
-		return { valid: false, error: 'Modulus (n) must be Base64URL encoded when present.' };
-	}
-	return { valid: true };
-}
-
-function normalizeDescription(description?: string): { valid: boolean; value?: string; error?: string } {
-	if (description === undefined) {
-		return { valid: true, value: undefined };
-	}
-	const normalized = description.trim();
-	if (normalized.length > 50) {
-		return { valid: false, error: 'Description must be 50 characters or fewer.' };
-	}
-	return { valid: true, value: normalized };
-}
-
-function isJwkObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function selectBestJwk(keys: Record<string, unknown>[]): Record<string, unknown> | undefined {
-	if (keys.length === 0) {
-		return undefined;
-	}
-	const sigKey = keys.find(key => key.use === 'sig');
-	return sigKey ?? keys[0];
-}
-
-function parseJWKSJsonInput(jwksJson: string): { success: boolean; selectedJwk?: Record<string, unknown>; jwkObjects?: Record<string, unknown>[]; normalizedJWKS?: string; error?: string } {
-	const trimmed = jwksJson.trim();
-	if (!trimmed) {
-		return { success: false, error: 'JWKS JSON is required' };
-	}
-
-	try {
-		const parsed = JSON.parse(trimmed);
-		if (!isJwkObject(parsed)) {
-			return { success: false, error: 'Invalid JWKS format: root must be a JSON object' };
-		}
-		const keysValue = parsed.keys;
-		if (!Array.isArray(keysValue)) {
-			return { success: false, error: 'Invalid JWKS format: missing keys array' };
-		}
-		const jwkObjects = keysValue.filter(isJwkObject);
-		const selected = selectBestJwk(jwkObjects);
-		if (!selected) {
-			return { success: false, error: 'No suitable keys found in JWKS' };
-		}
-		return {
-			success: true,
-			selectedJwk: selected,
-			jwkObjects,
-			normalizedJWKS: JSON.stringify(parsed)
-		};
-	} catch {
-		return { success: false, error: 'Invalid JSON format for JWKS input' };
-	}
+export interface KeyManagerDependencies {
+	storageManager?: KeyStorageLike;
+	fetchKeys?: (url: string) => Promise<FetchResult>;
 }
 
 /**
@@ -279,10 +61,12 @@ function parseJWKSJsonInput(jwksJson: string): { success: boolean; selectedJwk?:
  * Coordinates key storage, fetching, and refresh logic
  */
 export class KeyManager {
-	private readonly storageManager: KeyStorageManager;
+	private readonly storageManager: KeyStorageLike;
+	private readonly fetchKeys: (url: string) => Promise<FetchResult>;
 
-	constructor(context: vscode.ExtensionContext) {
-		this.storageManager = new KeyStorageManager(context);
+	constructor(context: vscode.ExtensionContext, dependencies: KeyManagerDependencies = {}) {
+		this.storageManager = dependencies.storageManager ?? new KeyStorageManager(context);
+		this.fetchKeys = dependencies.fetchKeys ?? fetchOIDCKeys;
 	}
 
 	/**
@@ -342,7 +126,7 @@ export class KeyManager {
 		} catch (error) {
 			return {
 				success: false,
-				error: error instanceof Error ? error.message : 'Failed to add manual key'
+				error: getErrorMessage(error, 'Failed to add manual key')
 			};
 		}
 	}
@@ -373,7 +157,7 @@ export class KeyManager {
 			}
 
 			// Fetch the key from the URL
-			const fetchResult = await fetchOIDCKeys(url.trim());
+			const fetchResult = await this.fetchKeys(url.trim());
 			if (!fetchResult.success || !fetchResult.jwks) {
 				return {
 					success: false,
@@ -381,7 +165,7 @@ export class KeyManager {
 				};
 			}
 
-			const jwkObjects = fetchResult.jwks.keys.filter(isJwkObject);
+			const jwkObjects = fetchResult.jwks.keys.filter(key => isJwkObject(key));
 			if (jwkObjects.length === 0) {
 				return { success: false, error: 'No suitable keys found in JWKS' };
 			}
@@ -399,7 +183,7 @@ export class KeyManager {
 		} catch (error) {
 			return {
 				success: false,
-				error: error instanceof Error ? error.message : 'Failed to add URL key'
+				error: getErrorMessage(error, 'Failed to add URL key')
 			};
 		}
 	}
@@ -424,9 +208,6 @@ export class KeyManager {
 			}
 
 			const jwkObjects = parsedResult.jwkObjects || [];
-			if (jwkObjects.length === 0) {
-				return { success: false, error: 'No suitable keys found in JWKS' };
-			}
 			const key = await this.storageManager.addJWKSJsonKey(
 				name.trim(),
 				parsedResult.normalizedJWKS,
@@ -438,7 +219,7 @@ export class KeyManager {
 		} catch (error) {
 			return {
 				success: false,
-				error: error instanceof Error ? error.message : 'Failed to add JWKS JSON key'
+				error: getErrorMessage(error, 'Failed to add JWKS JSON key')
 			};
 		}
 	}
@@ -483,7 +264,7 @@ export class KeyManager {
 		} catch (error) {
 			return {
 				success: false,
-				error: error instanceof Error ? error.message : 'Failed to update JWKS JSON key'
+				error: getErrorMessage(error, 'Failed to update JWKS JSON key')
 			};
 		}
 	}
@@ -504,7 +285,7 @@ export class KeyManager {
 			}
 
 			// Fetch updated key
-			const fetchResult = await fetchOIDCKeys(key.url);
+			const fetchResult = await this.fetchKeys(key.url);
 			if (!fetchResult.success || !fetchResult.jwks) {
 				return {
 					success: false,
@@ -512,7 +293,7 @@ export class KeyManager {
 				};
 			}
 
-			const jwkObjects = fetchResult.jwks.keys.filter(isJwkObject);
+			const jwkObjects = fetchResult.jwks.keys.filter(key => isJwkObject(key));
 			if (jwkObjects.length === 0) {
 				return { success: false, error: 'No suitable keys found in JWKS' };
 			}
@@ -527,7 +308,7 @@ export class KeyManager {
 		} catch (error) {
 			return {
 				success: false,
-				error: error instanceof Error ? error.message : 'Failed to refresh key'
+				error: getErrorMessage(error, 'Failed to refresh key')
 			};
 		}
 	}
@@ -570,7 +351,7 @@ export class KeyManager {
 		} catch (error) {
 			return {
 				success: false,
-				error: error instanceof Error ? error.message : 'Failed to get key'
+				error: getErrorMessage(error, 'Failed to get key')
 			};
 		}
 	}
@@ -623,7 +404,7 @@ export class KeyManager {
 		} catch (error) {
 			return {
 				success: false,
-				error: error instanceof Error ? error.message : 'Failed to update key'
+				error: getErrorMessage(error, 'Failed to update key')
 			};
 		}
 	}
@@ -651,7 +432,7 @@ export class KeyManager {
 		} catch (error) {
 			return {
 				success: false,
-				error: error instanceof Error ? error.message : 'Failed to update key name'
+				error: getErrorMessage(error, 'Failed to update key name')
 			};
 		}
 	}
@@ -687,7 +468,7 @@ export class KeyManager {
 		} catch (error) {
 			return {
 				success: false,
-				error: error instanceof Error ? error.message : 'Failed to update URL key settings'
+				error: getErrorMessage(error, 'Failed to update URL key settings')
 			};
 		}
 	}
@@ -699,69 +480,9 @@ export class KeyManager {
 		return this.storageManager.getDecodedKey(key);
 	}
 
-	getValidationMaterial(key: ValidationKey, tokenKid?: string, selectedKeyRefOverride?: string): { success: boolean; data?: ValidationKeyMaterial; error?: string } {
+	getValidationMaterial(key: ValidationKey, tokenKid?: string, selectedKeyRefOverride?: string) {
 		const decoded = this.getDecodedKey(key);
-		const parsedModel = parseKeySetModel(decoded);
-
-		if (!parsedModel || parsedModel.keys.length === 0) {
-			return { success: false, error: 'No usable keys found in key set' };
-		}
-
-		const keyOptions = getKeyOptions(parsedModel.keys);
-		const overrideMatch = resolveKeyByRef(parsedModel.keys, selectedKeyRefOverride);
-		const kidMatch = resolveKeyByKid(parsedModel.keys, tokenKid);
-		const singleKeyFallback = parsedModel.keys.length === 1 ? { key: parsedModel.keys[0], index: 0 } : null;
-		const selected = overrideMatch || kidMatch || singleKeyFallback;
-		const selectionReason: 'kid-match' | 'single-key' | 'override' = overrideMatch
-			? 'override'
-			: kidMatch
-				? 'kid-match'
-				: 'single-key';
-
-		if (!selected) {
-			return {
-				success: false,
-				error: tokenKid
-					? `No key with kid "${tokenKid}" was found, and no fallback key is selected. Choose a fallback key in Key Details.`
-					: 'JWT did not provide kid and no fallback key is selected. Choose a fallback key in Key Details.'
-			};
-		}
-
-		try {
-			const publicKey = crypto.createPublicKey({ key: selected.key as crypto.JsonWebKey, format: 'jwk' })
-				.export({ type: 'spki', format: 'pem' })
-				.toString();
-
-			return {
-				success: true,
-				data: {
-					publicKey,
-					selectedKeyRef: getKeyRef(selected.key, selected.index),
-					selectedKid: typeof selected.key.kid === 'string' ? selected.key.kid : undefined,
-					algorithm: typeof selected.key.alg === 'string' ? selected.key.alg : undefined,
-					typ: typeof selected.key.typ === 'string' ? selected.key.typ : undefined,
-					selectionReason,
-					availableKeyOptions: keyOptions
-				}
-			};
-		} catch {
-			const embeddedPem = selected.key.key;
-			if (typeof embeddedPem === 'string') {
-				return {
-					success: true,
-					data: {
-						publicKey: embeddedPem,
-						selectedKeyRef: getKeyRef(selected.key, selected.index),
-						selectedKid: typeof selected.key.kid === 'string' ? selected.key.kid : undefined,
-						algorithm: typeof selected.key.alg === 'string' ? selected.key.alg : undefined,
-						typ: typeof selected.key.typ === 'string' ? selected.key.typ : undefined,
-						selectionReason,
-						availableKeyOptions: keyOptions
-					}
-				};
-			}
-			return { success: false, error: 'Selected key is not usable for validation' };
-		}
+		return getValidationMaterialFromDecoded(decoded, tokenKid, selectedKeyRefOverride);
 	}
 
 	getPublicKeyForValidation(key: ValidationKey): string {
@@ -772,50 +493,9 @@ export class KeyManager {
 		return material.data.publicKey;
 	}
 
-	getKeyEditorData(key: ValidationKey): KeyEditorData {
+	getKeyEditorData(key: ValidationKey) {
 		const decoded = this.getDecodedKey(key);
-		const parsedModel = parseKeySetModel(decoded);
-
-		if (!parsedModel || parsedModel.keys.length === 0) {
-			return {
-				claims: {},
-				decodedKey: decoded,
-				rawJson: isURLKey(key)
-					? decoded
-					: isJWKSJsonKey(key)
-						? key.rawJwksJson
-						: undefined
-			};
-		}
-
-		const keyOptions = getKeyOptions(parsedModel.keys);
-		const selectedIndex = parsedModel.keys.findIndex(candidate => candidate.use === 'sig');
-		const selectedJwk = selectedIndex >= 0 ? parsedModel.keys[selectedIndex] : parsedModel.keys[0];
-
-		let decodedKey = '';
-		if (selectedJwk) {
-			try {
-				decodedKey = crypto.createPublicKey({ key: selectedJwk as crypto.JsonWebKey, format: 'jwk' })
-					.export({ type: 'spki', format: 'pem' })
-					.toString();
-			} catch {
-				decodedKey = '';
-			}
-		}
-
-		return {
-			claims: selectedJwk,
-			rawJson: isURLKey(key)
-				? JSON.stringify({ keys: parsedModel.keys })
-				: isJWKSJsonKey(key)
-					? key.rawJwksJson
-					: undefined,
-			decodedKey,
-			algorithm: typeof selectedJwk.alg === 'string' ? selectedJwk.alg : undefined,
-			typ: typeof selectedJwk.typ === 'string' ? selectedJwk.typ : undefined,
-			kid: typeof selectedJwk.kid === 'string' ? selectedJwk.kid : undefined,
-			availableKeyOptions: keyOptions
-		};
+		return buildKeyEditorData(key, decoded);
 	}
 
 	/**

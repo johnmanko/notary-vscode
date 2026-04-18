@@ -56,6 +56,13 @@ Regression tests for key selection precedence and key-set editor data.
   - `kid` match and preferred fallback behavior
   - URL/JWKS editor data preserving complete key-set metadata
 
+#### `keyManagerOperations.test.ts`
+Focused tests for `KeyManager` mutation and refresh behavior.
+- **Tests cover:**
+  - Manual, URL, and JWKS JSON add/update flows
+  - Refresh behavior, refresh failures, and cached fallback behavior
+  - CRUD operations and manager-level error handling
+
 #### `webviewUtils.test.ts`
 Tests for webview utility functions.
 - **Tests cover:**
@@ -87,6 +94,16 @@ npm run watch-tests
 ### Compile tests only
 \`\`\`bash
 npm run compile-tests
+\`\`\`
+
+### Run focused coverage checks for Mocha suites
+\`\`\`bash
+npm run coverage:focused
+\`\`\`
+
+### Run focused coverage for a single suite
+\`\`\`bash
+npm run coverage:focused:file -- --suite keyManagement
 \`\`\`
 
 ## Test Coverage
@@ -125,6 +142,20 @@ Tests are designed to run in CI/CD pipelines and include:
 - ✅ Fast execution (typically < 1 minute)
 - ✅ Deterministic results
 - ✅ Clear error messages
+
+## Focused Coverage
+
+Focused coverage checks target the pure Mocha suites compiled into \`dist-test\` and enforce a 90% minimum for statements, branches, functions, and lines on the source files each suite is intended to cover.
+
+The focused runner currently covers:
+- \`escapeUtils.test.ts\`
+- \`jwtDecoder.test.ts\`
+- \`jwtEdgeCases.test.ts\`
+- \`keyManagement.test.ts\`
+- \`keyManagerSelection.test.ts\` and \`keyManagerOperations.test.ts\` together as the \`keyManager\` focused suite
+- \`webviewUtils.test.ts\`
+
+The VS Code extension-host suites \`extension.test.ts\` and \`integration.test.ts\` are intentionally not part of this runner because they execute under the VS Code test harness rather than plain Mocha.
 
 ## Writing New Tests
 
