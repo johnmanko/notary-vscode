@@ -14,12 +14,17 @@ import { suite, test } from 'mocha';
 import { JWKSJsonValidationKey, KeySource, RefreshPeriod, URLValidationKey, ValidationKey } from '../src/types/keyManagement';
 import {
 	buildKeyEditorData,
+	defaultKtyHandler,
+	ecHandler,
 	getErrorMessage,
 	getValidationMaterialFromDecoded,
 	normalizeManualClaims,
+	octHandler,
+	okpHandler,
 	parseStoredJson,
 	parseJWKSJsonInput,
 	resolveKeyByRef,
+	rsaHandler,
 	validateManualPemInput,
 	validateManualClaims
 } from '../src/utils/keyManagerHelpers';
@@ -180,5 +185,110 @@ suite('Key Manager Helpers', () => {
 		assert.strictEqual(jwksData.rawJson, jwksKey.rawJwksJson);
 		assert.deepStrictEqual(invalidData.claims, {});
 		assert.strictEqual(invalidData.decodedKey, 'not-json');
+	});
+});
+
+suite('KtyHandler — per-handler isolation', () => {
+	test('rsaHandler metadata is correct', () => {
+		assert.strictEqual(rsaHandler.kty, 'RSA');
+		assert.strictEqual(rsaHandler.defaultAlgorithm, 'RS256');
+	});
+
+	test('rsaHandler.normalize injects RSA-specific fields', () => {
+		const claims = rsaHandler.normalize('RS256', {});
+		assert.strictEqual(claims.kty, 'RSA');
+		assert.strictEqual(claims.e, 'AQAB');
+		assert.ok('n' in claims);
+		assert.ok(!('crv' in claims));
+		assert.ok(!('x' in claims));
+		assert.ok(!('k' in claims));
+	});
+
+	test('rsaHandler.validate accepts valid RSA claims and rejects bad exponent', () => {
+		assert.deepStrictEqual(rsaHandler.validate({ kty: 'RSA', e: 'AQAB', n: VALID_RSA_N }), { valid: true });
+		const bad = rsaHandler.validate({ kty: 'RSA', e: 'bad+/value' });
+		assert.strictEqual(bad.valid, false);
+		assert.ok((bad.error ?? '').includes('Exponent'));
+	});
+
+	test('ecHandler metadata is correct', () => {
+		assert.strictEqual(ecHandler.kty, 'EC');
+		assert.strictEqual(ecHandler.defaultAlgorithm, 'ES256');
+	});
+
+	test('ecHandler.normalize injects EC-specific fields', () => {
+		const claims = ecHandler.normalize('ES256', { crv: 'P-256', x: 'abc_DEF', y: 'xyz_DEF' });
+		assert.strictEqual(claims.kty, 'EC');
+		assert.strictEqual(claims.crv, 'P-256');
+		assert.strictEqual(claims.x, 'abc_DEF');
+		assert.strictEqual(claims.y, 'xyz_DEF');
+		assert.ok(!('e' in claims));
+		assert.ok(!('n' in claims));
+	});
+
+	test('ecHandler.validate accepts valid EC claims and rejects bad coordinates', () => {
+		assert.deepStrictEqual(ecHandler.validate({ kty: 'EC', x: 'abc_DEF-123', y: 'xyz_DEF-456' }), { valid: true });
+		assert.strictEqual(ecHandler.validate({ kty: 'EC', x: 'bad+/value' }).valid, false);
+		assert.strictEqual(ecHandler.validate({ kty: 'EC', y: 'bad+/value' }).valid, false);
+	});
+
+	test('okpHandler metadata is correct', () => {
+		assert.strictEqual(okpHandler.kty, 'OKP');
+		assert.strictEqual(okpHandler.defaultAlgorithm, 'EdDSA');
+	});
+
+	test('okpHandler.normalize injects OKP-specific fields', () => {
+		const claims = okpHandler.normalize('EdDSA', { crv: 'Ed25519', x: 'abc_DEF' });
+		assert.strictEqual(claims.kty, 'OKP');
+		assert.strictEqual(claims.crv, 'Ed25519');
+		assert.strictEqual(claims.x, 'abc_DEF');
+		assert.ok(!('y' in claims));
+		assert.ok(!('e' in claims));
+	});
+
+	test('okpHandler.validate accepts valid OKP claims and rejects bad public key', () => {
+		assert.deepStrictEqual(okpHandler.validate({ kty: 'OKP', x: 'abc_DEF-123' }), { valid: true });
+		assert.strictEqual(okpHandler.validate({ kty: 'OKP', x: 'bad+/value' }).valid, false);
+	});
+
+	test('octHandler metadata is correct', () => {
+		assert.strictEqual(octHandler.kty, 'OCT');
+		assert.strictEqual(octHandler.defaultAlgorithm, 'HS256');
+	});
+
+	test('octHandler.normalize injects oct-specific fields', () => {
+		const claims = octHandler.normalize('HS256', { k: 'abc_DEF-123' });
+		assert.strictEqual(claims.kty, 'OCT');
+		assert.strictEqual(claims.k, 'abc_DEF-123');
+		assert.ok(!('e' in claims));
+		assert.ok(!('crv' in claims));
+	});
+
+	test('octHandler.validate accepts valid oct claims and rejects bad key value', () => {
+		assert.deepStrictEqual(octHandler.validate({ kty: 'oct', k: 'abc_DEF-123' }), { valid: true });
+		assert.strictEqual(octHandler.validate({ kty: 'oct', k: 'bad+/value' }).valid, false);
+	});
+
+	test('defaultKtyHandler normalizes common fields without kty-specific enforcement', () => {
+		const claims = defaultKtyHandler.normalize('custom-alg', { kty: 'CUSTOM', customField: 'value', alg: 'custom-alg' });
+		assert.strictEqual(claims.kty, 'CUSTOM');
+		assert.strictEqual(claims.alg, 'custom-alg');
+	});
+
+	test('defaultKtyHandler.validate always returns valid regardless of claims', () => {
+		assert.deepStrictEqual(defaultKtyHandler.validate({ kty: 'CUSTOM', e: 'bad+/value', n: 'bad+/value' }), { valid: true });
+		assert.deepStrictEqual(defaultKtyHandler.validate({}), { valid: true });
+	});
+
+	test('normalizeManualClaims uses defaultKtyHandler for unknown kty', () => {
+		const claims = normalizeManualClaims('custom-alg', 'CUSTOM', { kty: 'CUSTOM', alg: 'custom-alg' });
+		assert.strictEqual(claims.kty, 'CUSTOM');
+		assert.ok(!('e' in claims));
+		assert.ok(!('crv' in claims));
+		assert.ok(!('k' in claims));
+	});
+
+	test('validateManualClaims uses defaultKtyHandler for unknown kty', () => {
+		assert.deepStrictEqual(validateManualClaims({ kty: 'CUSTOM', anything: 'goes' }), { valid: true });
 	});
 });

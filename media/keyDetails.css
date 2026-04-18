@@ -290,6 +290,41 @@ body {
 	word-break: break-word;
 }
 
+.kty-suggestions {
+	margin-top: 4px;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.2));
+	border-radius: 3px;
+	padding: 4px;
+	max-height: 140px;
+	overflow-y: auto;
+}
+
+.kty-suggestions[hidden] {
+	display: none;
+}
+
+.kty-suggestion-item {
+	text-align: left;
+	background: transparent;
+	color: var(--vscode-input-foreground);
+	border: 1px solid transparent;
+	border-radius: 2px;
+	padding: 4px 8px;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.kty-suggestion-item:hover,
+.kty-suggestion-item:focus-visible {
+	background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.08));
+	border-color: var(--vscode-focusBorder, rgba(255,255,255,0.3));
+	outline: none;
+}
+
 .claim-hint.invalid {
 	color: var(--vscode-errorForeground);
 }

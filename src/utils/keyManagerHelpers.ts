@@ -100,69 +100,109 @@ function normalizeCommonManualClaims(algorithm: string, keyType: string, claims?
 	return normalized;
 }
 
-function normalizeRsaManualClaims(algorithm: string, keyType: string, claims?: Record<string, unknown>): Record<string, string> {
-	const normalized = normalizeCommonManualClaims(algorithm, keyType, claims);
-	normalized.n = sanitizeClaim(claims?.n, '');
-	normalized.e = sanitizeClaim(claims?.e, 'AQAB');
-	return normalized;
+/**
+ * A KtyHandler bundles all kty-specific logic (field normalization and claim validation)
+ * into a single named object per key type.  Exporting them individually makes it easy to
+ * add support for new key types without touching the dispatch registry, and makes each
+ * handler directly testable in isolation.
+ */
+export interface KtyHandler {
+	readonly kty: string;
+	readonly defaultAlgorithm: string;
+	normalize(algorithm: string, claims?: Record<string, unknown>): Record<string, string>;
+	validate(claims: Record<string, string>): { valid: boolean; error?: string };
 }
 
-function normalizeEcManualClaims(algorithm: string, keyType: string, claims?: Record<string, unknown>): Record<string, string> {
-	const normalized = normalizeCommonManualClaims(algorithm, keyType, claims);
-	normalized.crv = sanitizeClaim(claims?.crv, '');
-	normalized.x = sanitizeClaim(claims?.x, '');
-	normalized.y = sanitizeClaim(claims?.y, '');
-	return normalized;
-}
-
-function normalizeOkpManualClaims(algorithm: string, keyType: string, claims?: Record<string, unknown>): Record<string, string> {
-	const normalized = normalizeCommonManualClaims(algorithm, keyType, claims);
-	normalized.crv = sanitizeClaim(claims?.crv, '');
-	normalized.x = sanitizeClaim(claims?.x, '');
-	return normalized;
-}
-
-function normalizeOctManualClaims(algorithm: string, keyType: string, claims?: Record<string, unknown>): Record<string, string> {
-	const normalized = normalizeCommonManualClaims(algorithm, keyType, claims);
-	normalized.k = sanitizeClaim(claims?.k, '');
-	return normalized;
-}
-
-type ManualClaimNormalizer = (algorithm: string, keyType: string, claims?: Record<string, unknown>) => Record<string, string>;
-type ManualClaimValidator = (claims: Record<string, string>) => { valid: boolean; error?: string };
-
-const manualClaimNormalizers: Record<string, ManualClaimNormalizer> = {
-	RSA: normalizeRsaManualClaims,
-	EC: normalizeEcManualClaims,
-	OKP: normalizeOkpManualClaims,
-	OCT: normalizeOctManualClaims
-};
-
-const manualClaimValidators: Record<string, ManualClaimValidator> = {
-	RSA: (claims) => {
+export const rsaHandler: KtyHandler = {
+	kty: 'RSA',
+	defaultAlgorithm: 'RS256',
+	normalize(algorithm, claims) {
+		const normalized = normalizeCommonManualClaims(algorithm, 'RSA', claims);
+		normalized.n = sanitizeClaim(claims?.n, '');
+		normalized.e = sanitizeClaim(claims?.e, 'AQAB');
+		return normalized;
+	},
+	validate(claims) {
 		const exponentValidation = validateRequiredBase64UrlClaim(claims, 'e', 'Exponent (e)');
 		if (!exponentValidation.valid) {
 			return exponentValidation;
 		}
 		return validateOptionalBase64UrlClaim(claims, 'n', 'Modulus (n)');
+	}
+};
+
+export const ecHandler: KtyHandler = {
+	kty: 'EC',
+	defaultAlgorithm: 'ES256',
+	normalize(algorithm, claims) {
+		const normalized = normalizeCommonManualClaims(algorithm, 'EC', claims);
+		normalized.crv = sanitizeClaim(claims?.crv, '');
+		normalized.x = sanitizeClaim(claims?.x, '');
+		normalized.y = sanitizeClaim(claims?.y, '');
+		return normalized;
 	},
-	EC: (claims) => {
+	validate(claims) {
 		const xValidation = validateOptionalBase64UrlClaim(claims, 'x', 'X coordinate (x)');
 		if (!xValidation.valid) {
 			return xValidation;
 		}
 		return validateOptionalBase64UrlClaim(claims, 'y', 'Y coordinate (y)');
-	},
-	OKP: (claims) => validateOptionalBase64UrlClaim(claims, 'x', 'Public key (x)'),
-	OCT: (claims) => validateOptionalBase64UrlClaim(claims, 'k', 'Key value (k)')
+	}
 };
 
-function getManualClaimNormalizer(keyType: string): ManualClaimNormalizer {
-	return manualClaimNormalizers[keyType.toUpperCase()] ?? normalizeRsaManualClaims;
-}
+export const okpHandler: KtyHandler = {
+	kty: 'OKP',
+	defaultAlgorithm: 'EdDSA',
+	normalize(algorithm, claims) {
+		const normalized = normalizeCommonManualClaims(algorithm, 'OKP', claims);
+		normalized.crv = sanitizeClaim(claims?.crv, '');
+		normalized.x = sanitizeClaim(claims?.x, '');
+		return normalized;
+	},
+	validate(claims) {
+		return validateOptionalBase64UrlClaim(claims, 'x', 'Public key (x)');
+	}
+};
 
-function getManualClaimValidator(keyType: string): ManualClaimValidator {
-	return manualClaimValidators[keyType.toUpperCase()] ?? manualClaimValidators.RSA;
+export const octHandler: KtyHandler = {
+	kty: 'OCT',
+	defaultAlgorithm: 'HS256',
+	normalize(algorithm, claims) {
+		const normalized = normalizeCommonManualClaims(algorithm, 'OCT', claims);
+		normalized.k = sanitizeClaim(claims?.k, '');
+		return normalized;
+	},
+	validate(claims) {
+		return validateOptionalBase64UrlClaim(claims, 'k', 'Key value (k)');
+	}
+};
+
+/**
+ * Fallback handler for non-standard or unknown kty values.  It normalizes the common
+ * JWK fields (kty, use, alg, kid, typ) and passes all other string claims through
+ * unchanged, but imposes no kty-specific field requirements or validation rules.
+ * This allows custom key types to function without being explicitly registered.
+ */
+export const defaultKtyHandler: KtyHandler = {
+	kty: '',
+	defaultAlgorithm: '',
+	normalize(algorithm, claims) {
+		return normalizeCommonManualClaims(algorithm, sanitizeClaim(claims?.kty, ''), claims);
+	},
+	validate(_claims) {
+		return { valid: true };
+	}
+};
+
+const ktyHandlers: Record<string, KtyHandler> = {
+	RSA: rsaHandler,
+	EC: ecHandler,
+	OKP: okpHandler,
+	OCT: octHandler
+};
+
+function getKtyHandler(keyType: string): KtyHandler {
+	return ktyHandlers[keyType.toUpperCase()] ?? defaultKtyHandler;
 }
 
 function sanitizeJwkClaims(record: Record<string, unknown>): Record<string, unknown> {
@@ -360,12 +400,12 @@ export function resolveKeyByRef(keys: Record<string, unknown>[], preferredRef?: 
 
 export function normalizeManualClaims(algorithm: string, keyType: string, claims?: Record<string, unknown>): Record<string, string> {
 	const normalizedKeyType = keyType.trim().toUpperCase() || 'RSA';
-	return getManualClaimNormalizer(normalizedKeyType)(algorithm, normalizedKeyType, claims);
+	return getKtyHandler(normalizedKeyType).normalize(algorithm, claims);
 }
 
 export function validateManualClaims(claims: Record<string, string>): { valid: boolean; error?: string } {
 	const normalizedKeyType = sanitizeClaim(claims.kty, 'RSA').toUpperCase();
-	return getManualClaimValidator(normalizedKeyType)(claims);
+	return getKtyHandler(normalizedKeyType).validate(claims);
 }
 
 export function normalizeDescription(description?: string): { valid: boolean; value?: string; error?: string } {
