@@ -1,3 +1,5 @@
+![Notary JWT Viewer and Validator](./images/header.webp)
+
 # Notary - JWT Viewer and Validator
 
 A powerful Visual Studio Code extension for decoding, inspecting, and validating JSON Web Tokens (JWTs).
