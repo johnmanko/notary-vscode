@@ -33,6 +33,8 @@ const publicKeySection = document.getElementById('public-key-section')!;
 const claimsFields = document.getElementById('claims-fields')!;
 const rawJsonSection = document.getElementById('raw-json-section')!;
 const rawJsonToggle = document.getElementById('raw-json-toggle') as HTMLButtonElement;
+const rawJsonCopy = document.getElementById('raw-json-copy') as HTMLButtonElement;
+const rawJsonCopyFeedback = document.getElementById('raw-json-copy-feedback')!;
 const rawJsonContent = document.getElementById('raw-json-content')!;
 const sourceSelectionSection = document.getElementById('source-selection-section')!;
 const sourceUrlRadio = document.getElementById('source-url') as HTMLInputElement;
@@ -924,6 +926,16 @@ rawJsonToggle.addEventListener('click', () => {
 	rawJsonToggle.textContent = visible ? getRawJsonShowLabel() : getRawJsonHideLabel();
 });
 
+rawJsonCopy.addEventListener('click', async () => {
+	const copied = await writeTextToClipboard(rawJsonContent.textContent ?? '');
+	if (copied) {
+		showCopyFeedback('Copied to clipboard');
+		return;
+	}
+
+	showCopyFeedback('Unable to copy', true);
+});
+
 function normalizePemInput(value: string): string {
 	return value
 		.trim()
@@ -1435,6 +1447,49 @@ function escapeHtml(value: string): string {
 		.replaceAll('>', '&gt;')
 		.replaceAll('"', '&quot;')
 		.replaceAll("'", '&#39;');
+}
+
+async function writeTextToClipboard(text: string): Promise<boolean> {
+	if (!text.trim()) {
+		return false;
+	}
+
+	try {
+		if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+			await navigator.clipboard.writeText(text);
+			return true;
+		}
+	} catch {
+		// Fall through to legacy copy path.
+	}
+
+	const scratch = document.createElement('textarea');
+	scratch.value = text;
+	scratch.setAttribute('readonly', 'true');
+	scratch.style.position = 'fixed';
+	scratch.style.top = '-9999px';
+	scratch.style.left = '-9999px';
+	document.body.appendChild(scratch);
+	scratch.select();
+
+	try {
+		return document.execCommand('copy');
+	} catch {
+		return false;
+	} finally {
+		document.body.removeChild(scratch);
+	}
+}
+
+function showCopyFeedback(message: string, isError = false): void {
+	rawJsonCopyFeedback.textContent = message;
+	rawJsonCopyFeedback.style.color = isError
+		? 'var(--vscode-errorForeground)'
+		: 'var(--vscode-testing-iconPassed, #73c991)';
+
+	rawJsonCopyFeedback.classList.remove('visible');
+	void rawJsonCopyFeedback.offsetWidth;
+	rawJsonCopyFeedback.classList.add('visible');
 }
 
 function loadKeyData(key: any): void {

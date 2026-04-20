@@ -84,7 +84,14 @@ SPDX-License-Identifier: GPL-3.0
 		</div>
 
 		<div class="section" id="raw-json-section" style="display: none;">
-			<button id="raw-json-toggle" class="btn btn-secondary" type="button">Show Raw JSON</button>
+			<div class="raw-json-controls">
+				<button id="raw-json-toggle" class="btn btn-secondary" type="button">Show Raw JSON</button>
+				<button id="raw-json-copy" class="btn btn-secondary btn-icon" type="button" aria-label="Copy JWKS JSON" title="Copy JWKS JSON">
+					<span class="copy-icon" aria-hidden="true"></span>
+					<span class="sr-only">Copy JWKS JSON</span>
+				</button>
+				<span id="raw-json-copy-feedback" class="copy-feedback" role="status" aria-live="polite">Copied to clipboard</span>
+			</div>
 			<pre id="raw-json-content" class="readonly-field"></pre>
 		</div>
 
