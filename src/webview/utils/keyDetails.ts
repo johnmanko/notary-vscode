@@ -86,7 +86,7 @@ const CLAIM_NAME_DICTIONARY: Record<string, string> = {
 };
 
 const DEFAULT_MANUAL_CLAIMS: Record<string, string> = {
-	kty: '',
+	kty: 'RSA',
 	use: 'sig',
 	alg: 'RS256',
 	kid: 'key1'
@@ -102,14 +102,19 @@ const KTY_SPECIFIC_FIELDS: Record<string, Record<string, string>> = {
 	OCT: { k: '' }
 };
 
+const DEFAULT_ALGORITHM_BY_KTY: Record<string, string> = {
+	RSA: 'RS256',
+	EC: 'ES256',
+	OKP: 'EdDSA',
+	OCT: 'HS256'
+};
+
 // All kty-specific field names across every known handler — used to strip stale fields on switch.
 const ALL_KTY_SPECIFIC_FIELD_NAMES = new Set(
 	Object.values(KTY_SPECIFIC_FIELDS).flatMap(fields => Object.keys(fields))
 );
 
 const KNOWN_KTY_OPTIONS = ['RSA', 'EC', 'OKP', 'OCT'];
-
-const NON_EDITABLE_MANUAL_CLAIMS = new Set<string>();
 
 const DERIVED_CLAIM_FIELDS: Record<string, string[]> = {
 	RSA: ['n', 'e'],
@@ -147,6 +152,39 @@ function ensureManualClaimDefaults(target: Record<string, unknown>): void {
 			target[claimKey] = defaultValue;
 		}
 	}
+}
+
+function getDefaultAlgorithmForKty(kty: string): string {
+	return DEFAULT_ALGORITHM_BY_KTY[kty] ?? DEFAULT_ALGORITHM_BY_KTY.RSA;
+}
+
+function getTrimmedStringClaim(source: Record<string, unknown>, claimKey: string, fallback: string): string {
+	const value = source[claimKey];
+	return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function sanitizeManualClaimsForEditor(claims?: Record<string, unknown>): Record<string, unknown> {
+	const source = claims ?? {};
+	const rawKty = typeof source.kty === 'string' ? source.kty.trim().toUpperCase() : DEFAULT_MANUAL_CLAIMS.kty;
+	const normalizedKty = isKnownKty(rawKty) ? rawKty : DEFAULT_MANUAL_CLAIMS.kty;
+	const sanitized: Record<string, unknown> = {
+		kty: normalizedKty,
+		use: getTrimmedStringClaim(source, 'use', DEFAULT_MANUAL_CLAIMS.use),
+		alg: getTrimmedStringClaim(source, 'alg', getDefaultAlgorithmForKty(normalizedKty)),
+		kid: getTrimmedStringClaim(source, 'kid', DEFAULT_MANUAL_CLAIMS.kid)
+	};
+
+	const typeClaim = getTrimmedStringClaim(source, 'typ', '');
+	if (typeClaim) {
+		sanitized.typ = typeClaim;
+	}
+
+	const specificClaims = KTY_SPECIFIC_FIELDS[normalizedKty];
+	for (const [field, defaultValue] of Object.entries(specificClaims)) {
+		sanitized[field] = typeof source[field] === 'string' ? source[field] : defaultValue;
+	}
+
+	return sanitized;
 }
 
 function isKnownKty(value: string): boolean {
@@ -194,7 +232,7 @@ function rescaffoldClaimsForKty(newKty: string): void {
 		currentClaims.alg = algDefaults[normalized] ?? currentAlg;
 	}
 
-	currentClaims.kty = newKty.trim();
+	currentClaims.kty = normalized;
 }
 
 function isBase64Url(value: string): boolean {
@@ -308,44 +346,102 @@ function chunkString(value: string, chunkSize: number): string[] {
 }
 
 async function derivePublicKeyPemFromJwk(record: Record<string, unknown>): Promise<string | null> {
-	if (!window.crypto?.subtle) {
+	if (!globalThis.crypto?.subtle) {
 		return null;
 	}
-
-	const kty = typeof record.kty === 'string' ? record.kty : '';
-	const n = typeof record.n === 'string' ? record.n : '';
-	const e = typeof record.e === 'string' ? record.e : '';
-	if (kty !== 'RSA' || !n || !e) {
+	const previewImportParams = getJwkImportParamsForPemPreview(record);
+	if (!previewImportParams) {
 		return null;
-	}
-
-	const jwkRecord: Record<string, unknown> = {
-		kty: 'RSA',
-		n,
-		e
-	};
-
-	const optionalFields = ['kid', 'alg', 'use'] as const;
-	for (const field of optionalFields) {
-		if (typeof record[field] === 'string') {
-			jwkRecord[field] = record[field] as string;
-		}
 	}
 
 	try {
-		const key = await window.crypto.subtle.importKey(
+		const key = await globalThis.crypto.subtle.importKey(
 			'jwk',
-			jwkRecord as JsonWebKey,
-			{ name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+			previewImportParams.jwkRecord as JsonWebKey,
+			previewImportParams.algorithm,
 			true,
 			['verify']
 		);
-		const spki = await window.crypto.subtle.exportKey('spki', key);
+		const spki = await globalThis.crypto.subtle.exportKey('spki', key);
 		const base64Body = chunkString(arrayBufferToBase64(spki), 64).join('\n');
 		return `-----BEGIN PUBLIC KEY-----\n${base64Body}\n-----END PUBLIC KEY-----`;
 	} catch {
 		return null;
 	}
+
+}
+
+function getJwkImportParamsForPemPreview(record: Record<string, unknown>): {
+	jwkRecord: Record<string, unknown>;
+	algorithm: AlgorithmIdentifier | RsaHashedImportParams | EcKeyImportParams;
+} | null {
+	const kty = typeof record.kty === 'string' ? record.kty : '';
+	if (kty === 'RSA') {
+		return buildRsaPreviewImportParams(record);
+	}
+	if (kty === 'EC') {
+		return buildEcPreviewImportParams(record);
+	}
+	if (kty === 'OKP') {
+		return buildOkpPreviewImportParams(record);
+	}
+	return null;
+}
+
+function addOptionalJwkPreviewFields(jwkRecord: Record<string, unknown>, record: Record<string, unknown>): Record<string, unknown> {
+	const optionalFields = ['kid', 'alg', 'use'] as const;
+	for (const field of optionalFields) {
+		if (typeof record[field] === 'string') {
+			jwkRecord[field] = record[field];
+		}
+	}
+	return jwkRecord;
+}
+
+function buildRsaPreviewImportParams(record: Record<string, unknown>): {
+	jwkRecord: Record<string, unknown>;
+	algorithm: RsaHashedImportParams;
+} | null {
+	const n = typeof record.n === 'string' ? record.n : '';
+	const e = typeof record.e === 'string' ? record.e : '';
+	if (!n || !e) {
+		return null;
+	}
+	return {
+		jwkRecord: addOptionalJwkPreviewFields({ kty: 'RSA', n, e }, record),
+		algorithm: { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }
+	};
+}
+
+function buildEcPreviewImportParams(record: Record<string, unknown>): {
+	jwkRecord: Record<string, unknown>;
+	algorithm: EcKeyImportParams;
+} | null {
+	const crv = typeof record.crv === 'string' ? record.crv : '';
+	const x = typeof record.x === 'string' ? record.x : '';
+	const y = typeof record.y === 'string' ? record.y : '';
+	if (!crv || !x || !y || !['P-256', 'P-384', 'P-521'].includes(crv)) {
+		return null;
+	}
+	return {
+		jwkRecord: addOptionalJwkPreviewFields({ kty: 'EC', crv, x, y }, record),
+		algorithm: { name: 'ECDSA', namedCurve: crv }
+	};
+}
+
+function buildOkpPreviewImportParams(record: Record<string, unknown>): {
+	jwkRecord: Record<string, unknown>;
+	algorithm: AlgorithmIdentifier;
+} | null {
+	const crv = typeof record.crv === 'string' ? record.crv : '';
+	const x = typeof record.x === 'string' ? record.x : '';
+	if (crv !== 'Ed25519' || !x) {
+		return null;
+	}
+	return {
+		jwkRecord: addOptionalJwkPreviewFields({ kty: 'OKP', crv, x }, record),
+		algorithm: { name: 'Ed25519' }
+	};
 }
 
 async function populateGroupedPublicKeys(keys: Record<string, unknown>[]): Promise<void> {
@@ -494,6 +590,10 @@ function validateManualClaims(claims: Record<string, unknown>): { valid: boolean
 	}
 
 	if (kty === 'EC') {
+		const crv = typeof claims.crv === 'string' ? claims.crv.trim() : '';
+		if (!crv) {
+			return { valid: false, error: 'Curve (crv) is required for EC keys.' };
+		}
 		const x = typeof claims.x === 'string' ? claims.x.trim() : '';
 		const y = typeof claims.y === 'string' ? claims.y.trim() : '';
 		if (x && !isBase64Url(x)) {
@@ -506,6 +606,10 @@ function validateManualClaims(claims: Record<string, unknown>): { valid: boolean
 	}
 
 	if (kty === 'OKP') {
+		const crv = typeof claims.crv === 'string' ? claims.crv.trim() : '';
+		if (!crv) {
+			return { valid: false, error: 'Curve (crv) is required for OKP keys.' };
+		}
 		const x = typeof claims.x === 'string' ? claims.x.trim() : '';
 		if (x && !isBase64Url(x)) {
 			return { valid: false, error: 'Public key (x) must be Base64URL when present.' };
@@ -515,6 +619,9 @@ function validateManualClaims(claims: Record<string, unknown>): { valid: boolean
 
 	if (kty === 'OCT') {
 		const k = typeof claims.k === 'string' ? claims.k.trim() : '';
+		if (!k) {
+			return { valid: false, error: 'Key value (k) is required and must be Base64URL encoded.' };
+		}
 		if (k && !isBase64Url(k)) {
 			return { valid: false, error: 'Key value (k) must be Base64URL when present.' };
 		}
@@ -564,7 +671,7 @@ function getRawJsonHideLabel(): string {
 }
 
 function buildManualKeyModelForPreview(): Record<string, unknown> {
-	ensureManualClaimDefaults(currentClaims);
+	currentClaims = sanitizeManualClaimsForEditor(currentClaims);
 
 	const model: Record<string, unknown> = {
 		kty: typeof currentClaims.kty === 'string' ? currentClaims.kty : '',
@@ -771,7 +878,7 @@ jwksJsonInput.addEventListener('input', () => {
 
 claimsFields.addEventListener('input', (event) => {
 	const target = event.target as HTMLInputElement;
-	if (!target || !target.dataset.claimKey) {
+	if (!target?.dataset.claimKey) {
 		return;
 	}
 	currentClaims[target.dataset.claimKey] = target.value;
@@ -782,20 +889,13 @@ claimsFields.addEventListener('input', (event) => {
 });
 
 claimsFields.addEventListener('change', (event) => {
-	const target = event.target as HTMLInputElement;
-	if (!target || target.dataset.claimKey !== 'kty') {
+	const target = event.target as HTMLInputElement | HTMLSelectElement;
+	if (target?.dataset.claimKey !== 'kty') {
 		return;
 	}
 
 	const enteredKty = target.value.trim();
-	if (isKnownKty(enteredKty)) {
-		rescaffoldClaimsForKty(enteredKty);
-	} else {
-		for (const field of ALL_KTY_SPECIFIC_FIELD_NAMES) {
-			delete currentClaims[field];
-		}
-		currentClaims.kty = enteredKty;
-	}
+	rescaffoldClaimsForKty(enteredKty);
 
 	renderClaims(currentClaims, false);
 	void updateDerivedClaimsFromPem();
@@ -989,10 +1089,20 @@ function handleCreateKey(): void {
 		});
 	} else {
 		// Create manual key
-		const validation = validateManualPemInput(keyDataTextarea.value);
-		if (!validation.valid) {
-			showError(validation.error || 'Invalid public key');
-			return;
+		const normalizedKeyType = keyType.trim().toUpperCase();
+		const publicKeyInput = keyDataTextarea.value.trim();
+		if (normalizedKeyType === 'OCT' && (!currentClaims.k || (typeof currentClaims.k === 'string' && !currentClaims.k.trim())) && publicKeyInput) {
+			currentClaims.k = publicKeyInput;
+		}
+
+		let normalizedKeyData = keyDataTextarea.value;
+		if (normalizedKeyType !== 'OCT') {
+			const validation = validateManualPemInput(keyDataTextarea.value);
+			if (!validation.valid) {
+				showError(validation.error || 'Invalid public key');
+				return;
+			}
+			normalizedKeyData = validation.normalized;
 		}
 
 		const claimsValidation = validateManualClaims(currentClaims);
@@ -1005,7 +1115,7 @@ function handleCreateKey(): void {
 			type: 'createManualKey',
 			name,
 			description: description.value,
-			keyData: validation.normalized,
+			keyData: normalizedKeyData,
 			algorithm,
 			keyType,
 			claims: currentClaims
@@ -1031,10 +1141,20 @@ function handleUpdateKey(): void {
 	}
 
 	if (!isUrlKey && !isJwksJsonKey) {
-		const validation = validateManualPemInput(keyDataTextarea.value);
-		if (!validation.valid) {
-			showError(validation.error || 'Invalid public key');
-			return;
+		const normalizedKeyType = keyType.trim().toUpperCase();
+		const publicKeyInput = keyDataTextarea.value.trim();
+		if (normalizedKeyType === 'OCT' && (!currentClaims.k || (typeof currentClaims.k === 'string' && !currentClaims.k.trim())) && publicKeyInput) {
+			currentClaims.k = publicKeyInput;
+		}
+
+		let normalizedKeyData = keyDataTextarea.value;
+		if (normalizedKeyType !== 'OCT') {
+			const validation = validateManualPemInput(keyDataTextarea.value);
+			if (!validation.valid) {
+				showError(validation.error || 'Invalid public key');
+				return;
+			}
+			normalizedKeyData = validation.normalized;
 		}
 
 		const claimsValidation = validateManualClaims(currentClaims);
@@ -1047,7 +1167,7 @@ function handleUpdateKey(): void {
 			type: 'updateKey',
 			name,
 			description: description.value,
-			keyData: validation.normalized,
+			keyData: normalizedKeyData,
 			algorithm,
 			keyType,
 			claims: currentClaims
@@ -1105,7 +1225,7 @@ function enterCreateMode(): void {
 	currentKey = null;
 	isUrlKey = false;
 	isJwksJsonKey = false;
-	currentClaims = { ...DEFAULT_MANUAL_CLAIMS };
+	currentClaims = sanitizeManualClaimsForEditor({ ...DEFAULT_MANUAL_CLAIMS });
 	
 	// Update title and UI for create mode
 	keyTitle.textContent = 'Add New Validation Key';
@@ -1159,41 +1279,29 @@ function renderClaims(claims: Record<string, unknown> | undefined, readOnly: boo
 		return;
 	}
 
-	const activeKty = getActiveKtyFromClaims(claims);
+	const sanitizedClaims = sanitizeManualClaimsForEditor(claims);
+	const activeKty = getActiveKtyFromClaims(sanitizedClaims);
 
-	claimsFields.innerHTML = Object.entries(claims).map(([key, value]) => {
+	claimsFields.innerHTML = Object.entries(sanitizedClaims).map(([key, value]) => {
 		const commonName = CLAIM_NAME_DICTIONARY[key] || key.toUpperCase();
 		const label = `${commonName} (${key})`;
-		let displayValue = '';
 		const isDerivedField = isDerivedClaimForKty(key, activeKty);
-		let editable = !readOnly && !NON_EDITABLE_MANUAL_CLAIMS.has(key) && !isDerivedField;
+		let displayValue = '';
 		if (key === 'n') {
 			displayValue = typeof value === 'string' ? value : '';
 		} else if (typeof value === 'string') {
 			displayValue = value;
 		} else {
 			displayValue = JSON.stringify(value);
-			editable = false;
 		}
-
-		const valueHtml = editable
-			? key === 'kty'
-				? `<input class="input" data-claim-key="kty" value="${escapeHtml(displayValue)}" autocomplete="off" />`
-				: `<input class="input" data-claim-key="${escapeHtml(key)}" value="${escapeHtml(displayValue)}" />`
-			: `<div class="readonly-field claim-readonly">${escapeHtml(displayValue)}</div>`;
-		const status = derivedClaimStatuses[key];
-		const helpHtml = isDerivedField
-			? status
-				? `<div class="claim-hint${status.isError ? ' invalid' : ''}">${escapeHtml(status.message)}</div>`
-				: `<div class="claim-hint">${DERIVED_FIELD_HELP_TEXT[key] || 'Derived from the Public Key PEM and read-only for this key type.'}</div>`
-			: key === 'e'
-			? '<div class="claim-hint">AQAB is Base64URL for exponent 65537 (common RSA public exponent).</div>'
-			: key === 'n'
-				? '<div class="claim-hint">Managed by the Public Key PEM field and shown here as read-only.</div>'
-				: '';
+		const editable = !readOnly && !isDerivedField && typeof value === 'string';
+		const valueHtml = getEditableClaimFieldHtml(key, displayValue, editable);
+		const helpHtml = getClaimHelpHtml(key, isDerivedField);
 		return `
 			<div class="metadata-item">
-				<span class="metadata-label">${escapeHtml(label)}:</span>
+				<div class="claim-header">
+					<span class="metadata-label">${escapeHtml(label)}:</span>
+				</div>
 				${valueHtml}
 				${helpHtml}
 			</div>
@@ -1206,77 +1314,51 @@ function renderClaims(claims: Record<string, unknown> | undefined, readOnly: boo
 			renderExponentHint(exponentInput);
 		}
 	}
-	attachKtySuggestionBehavior();
 }
-function attachKtySuggestionBehavior(): void {
-	const ktyInput = claimsFields.querySelector('input[data-claim-key="kty"]') as HTMLInputElement | null;
-	if (!ktyInput) {
-		return;
+
+function getEditableClaimFieldHtml(claimKey: string, displayValue: string, editable: boolean): string {
+	if (!editable) {
+		return `<div class="readonly-field claim-readonly">${escapeHtml(displayValue)}</div>`;
 	}
 
-	const wrapper = ktyInput.closest('.metadata-item') as HTMLElement | null;
-	if (!wrapper) {
-		return;
+	if (claimKey === 'kty') {
+		const optionsHtml = KNOWN_KTY_OPTIONS.map(option => {
+			const selected = option === displayValue ? ' selected' : '';
+			return `<option value="${escapeHtml(option)}"${selected}>${escapeHtml(option)}</option>`;
+		}).join('');
+		return `<select class="input" data-claim-key="kty">${optionsHtml}</select>`;
 	}
 
-	let panel = wrapper.querySelector('.kty-suggestions') as HTMLDivElement | null;
-	if (!panel) {
-		panel = document.createElement('div');
-		panel.className = 'kty-suggestions';
-		panel.hidden = true;
-		wrapper.appendChild(panel);
-	}
+	return `<input class="input" data-claim-key="${escapeHtml(claimKey)}" value="${escapeHtml(displayValue)}" />`;
+}
 
-	const renderSuggestions = (query: string): void => {
-		const normalizedQuery = query.trim().toUpperCase();
-		const matches = KNOWN_KTY_OPTIONS.filter(kty => kty.startsWith(normalizedQuery));
-		if (matches.length === 0) {
-			panel!.hidden = true;
-			panel!.innerHTML = '';
-			return;
+function getClaimHelpHtml(claimKey: string, isDerivedField: boolean): string {
+	if (isDerivedField) {
+		const status = derivedClaimStatuses[claimKey];
+		if (status) {
+			const invalidClass = status.isError ? ' invalid' : '';
+			return `<div class="claim-hint${invalidClass}">${escapeHtml(status.message)}</div>`;
 		}
+		const helpText = DERIVED_FIELD_HELP_TEXT[claimKey] || 'Derived from the Public Key PEM and read-only for this key type.';
+		return `<div class="claim-hint">${helpText}</div>`;
+	}
 
-		panel!.innerHTML = matches.map(kty => (
-			`<button type="button" class="kty-suggestion-item" data-kty-suggestion="${escapeHtml(kty)}">${escapeHtml(kty)}</button>`
-		)).join('');
-		panel!.hidden = false;
-	};
+	if (claimKey === 'e') {
+		return '<div class="claim-hint">AQAB is Base64URL for exponent 65537 (common RSA public exponent).</div>';
+	}
 
-	ktyInput.addEventListener('focus', () => {
-		renderSuggestions(ktyInput.value);
-	});
+	if (claimKey === 'n') {
+		return '<div class="claim-hint">Managed by the Public Key PEM field and shown here as read-only.</div>';
+	}
 
-	ktyInput.addEventListener('input', () => {
-		renderSuggestions(ktyInput.value);
-	});
-
-	ktyInput.addEventListener('blur', () => {
-		setTimeout(() => {
-			if (panel) {
-				panel.hidden = true;
-			}
-		}, 120);
-	});
-
-	panel.addEventListener('mousedown', (event) => {
-		event.preventDefault();
-		const target = event.target as HTMLElement;
-		const selected = target.dataset.ktySuggestion;
-		if (!selected) {
-			return;
-		}
-		ktyInput.value = selected;
-		currentClaims.kty = selected;
-		ktyInput.dispatchEvent(new Event('change', { bubbles: true }));
-		panel!.hidden = true;
-	});
+	return '';
 }
 
 function getClaimFieldHtml(claimKey: string, value: unknown, readOnly: boolean): string {
 	const commonName = CLAIM_NAME_DICTIONARY[claimKey] || claimKey.toUpperCase();
 	const label = `${commonName} (${claimKey})`;
 	let displayValue = '';
-	let editable = !readOnly && !NON_EDITABLE_MANUAL_CLAIMS.has(claimKey);
+	let editable = !readOnly;
 	if (claimKey === 'n') {
 		displayValue = typeof value === 'string' ? value : '';
 	} else if (typeof value === 'string') {
@@ -1286,16 +1368,8 @@ function getClaimFieldHtml(claimKey: string, value: unknown, readOnly: boolean):
 		editable = false;
 	}
 
-	const valueHtml = editable
-		? claimKey === 'kty'
-			? `<input class="input" data-claim-key="kty" value="${escapeHtml(displayValue)}" autocomplete="off" />`
-			: `<input class="input" data-claim-key="${escapeHtml(claimKey)}" value="${escapeHtml(displayValue)}" />`
-		: `<div class="readonly-field claim-readonly">${escapeHtml(displayValue)}</div>`;
-	const helpHtml = claimKey === 'e'
-		? '<div class="claim-hint">AQAB is Base64URL for exponent 65537 (common RSA public exponent).</div>'
-		: claimKey === 'n'
-			? '<div class="claim-hint">Managed by the Public Key PEM field and shown here as read-only.</div>'
-			: '';
+	const valueHtml = getEditableClaimFieldHtml(claimKey, displayValue, editable);
+	const helpHtml = getClaimHelpHtml(claimKey, false);
 
 	return `
 		<div class="metadata-item">
@@ -1399,7 +1473,7 @@ function loadKeyData(key: any): void {
 	jwksJsonInput.value = typeof key.jwksJson === 'string' ? key.jwksJson : '';
 	autoResizeTextarea(jwksJsonInput);
 	publicKeySection.style.display = 'block';
-	currentClaims = (key.claims && typeof key.claims === 'object') ? { ...key.claims } : {};
+	currentClaims = sanitizeManualClaimsForEditor((key.claims && typeof key.claims === 'object') ? key.claims : {});
 	renderPreferredKeyOptions();
 	if (isUrlKey || isJwksJsonKey) {
 		const keySet = extractKeySetFromRawJson(key.rawJson);

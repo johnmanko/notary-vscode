@@ -75,8 +75,7 @@ export class KeyStorageManager {
 	 * Get all stored validation keys
 	 */
 	async getKeys(): Promise<ValidationKey[]> {
-		const keys = this.context.globalState.get<ValidationKey[]>(STORAGE_KEY, []);
-		return keys;
+		return this.context.globalState.get<ValidationKey[]>(STORAGE_KEY, []);
 	}
 
 	/**

@@ -462,6 +462,9 @@ suite('Key Manager Operations', () => {
 		assert.strictEqual((await manager.addManualKey('', VALID_PUBLIC_PEM)).success, false);
 		assert.strictEqual((await manager.addManualKey('Manual', '')).success, false);
 		assert.strictEqual((await manager.addManualKey('Manual', 'not-a-pem')).success, false);
+		assert.strictEqual((await manager.addManualKey('Manual OCT', '', 'HS256', 'OCT', { kid: 'oct-1' })).success, false);
+		assert.strictEqual((await manager.addManualKey('Manual OCT', 'nvCOlEaAhu6n5EiKOtZePbfZhRVna2PaRSfyN-jEYG0', 'HS256', 'OCT', { kid: 'oct-1' })).success, true);
+		assert.strictEqual((await manager.addManualKey('Manual', VALID_PUBLIC_PEM, 'RS256', 'CUSTOM', { kid: 'manual-1' })).success, false);
 		assert.strictEqual((await manager.addManualKey('Manual', VALID_PUBLIC_PEM, 'RS256', 'RSA', { e: 'bad+/value' })).success, false);
 		assert.strictEqual((await manager.addManualKey('Manual', VALID_PUBLIC_PEM, 'RS256', 'RSA', { e: 'AQAB', n: 'bad+/value' })).success, false);
 		assert.strictEqual((await manager.addManualKey('Manual', VALID_PUBLIC_PEM, 'RS256', 'RSA', undefined, 'x'.repeat(51))).success, false);
@@ -522,6 +525,19 @@ suite('Key Manager Operations', () => {
 		assert.strictEqual((await manager.addURLKey('URL Key', 'http://127.0.0.1:9', RefreshPeriod.Daily)).success, false);
 	});
 
+	test('addURLKey should reject fetched JWKS payloads with no object keys', async () => {
+		await withJsonServer({
+			'/.well-known/openid-configuration': { body: { jwks_uri: '__BASE__/.well-known/jwks.json' } },
+			'/.well-known/jwks.json': { body: { keys: [1, 'bad', null] } }
+		}, async (baseUrl) => {
+			const { manager } = createManagerWithContext();
+			const result = await manager.addURLKey('URL Key', baseUrl, RefreshPeriod.Daily);
+
+			assert.strictEqual(result.success, false);
+			assert.strictEqual(result.error, 'No suitable keys found in JWKS');
+		});
+	});
+
 	test('refreshURLKey should handle missing, wrong-source, and failed-fetch cases', async () => {
 		const { manager, getStoredKeys } = createManagerWithContext();
 		assert.strictEqual((await manager.refreshURLKey('missing')).success, false);
@@ -542,6 +558,26 @@ suite('Key Manager Operations', () => {
 		};
 		const failureContext = createManagerWithContext([failingUrlKey]);
 		assert.strictEqual((await failureContext.manager.refreshURLKey('failing-url')).success, false);
+	});
+
+	test('refreshURLKey should reject fetched JWKS payloads with no object keys', async () => {
+		await withJsonServer({
+			'/jwks-valid': { body: { keys: [VALID_KEY_1] } },
+			'/jwks-empty-objects': { body: { keys: [1, 'bad', null] } }
+		}, async (baseUrl) => {
+			const { manager, getStoredKeys } = createManagerWithContext();
+			const addResult = await manager.addURLKey('URL Key', `${baseUrl}/jwks-valid`, RefreshPeriod.Daily);
+			assert.strictEqual(addResult.success, true);
+
+			getStoredKeys()[0] = {
+				...getStoredKeys()[0],
+				url: `${baseUrl}/jwks-empty-objects`
+			} as URLValidationKey;
+
+			const refreshResult = await manager.refreshURLKey(getStoredKeys()[0].id);
+			assert.strictEqual(refreshResult.success, false);
+			assert.strictEqual(refreshResult.error, 'No suitable keys found in JWKS');
+		});
 	});
 
 	test('refreshURLKey should handle storage update misses and thrown storage errors', async () => {
@@ -617,6 +653,7 @@ suite('Key Manager Operations', () => {
 		assert.strictEqual((await manager.updateManualKey(manualId, 'Manual Updated', VALID_PUBLIC_PEM, 'ES256', 'EC', { kid: 'manual-2', e: 'AQAB' }, 'updated')).success, true);
 		assert.strictEqual((await manager.updateManualKey(manualId, '', VALID_PUBLIC_PEM)).success, false);
 		assert.strictEqual((await manager.updateManualKey(manualId, 'Manual Updated', 'bad pem')).success, false);
+		assert.strictEqual((await manager.updateManualKey(manualId, 'Manual Updated', VALID_PUBLIC_PEM, 'RS256', 'CUSTOM', { kid: 'manual-2' })).success, false);
 		assert.strictEqual((await manager.updateManualKey('missing', 'Manual Updated', VALID_PUBLIC_PEM)).success, false);
 
 		assert.strictEqual((await manager.updateKeyName(manualId, 'Renamed', 'desc')).success, true);

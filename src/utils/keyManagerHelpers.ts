@@ -85,12 +85,6 @@ function normalizeCommonManualClaims(algorithm: string, keyType: string, claims?
 	const source = claims ?? {};
 	const normalized: Record<string, string> = {};
 
-	for (const [key, value] of Object.entries(source)) {
-		if (typeof value === 'string') {
-			normalized[key] = value.trim();
-		}
-	}
-
 	normalized.kty = sanitizeClaim(source.kty, keyType);
 	normalized.use = sanitizeClaim(source.use, 'sig');
 	normalized.alg = sanitizeClaim(source.alg, algorithm);
@@ -142,6 +136,9 @@ export const ecHandler: KtyHandler = {
 		return normalized;
 	},
 	validate(claims) {
+		if (!claims.crv?.trim()) {
+			return { valid: false, error: 'Curve (crv) is required for EC keys.' };
+		}
 		const xValidation = validateOptionalBase64UrlClaim(claims, 'x', 'X coordinate (x)');
 		if (!xValidation.valid) {
 			return xValidation;
@@ -160,39 +157,27 @@ export const okpHandler: KtyHandler = {
 		return normalized;
 	},
 	validate(claims) {
+		if (!claims.crv?.trim()) {
+			return { valid: false, error: 'Curve (crv) is required for OKP keys.' };
+		}
 		return validateOptionalBase64UrlClaim(claims, 'x', 'Public key (x)');
 	}
 };
 
 export const octHandler: KtyHandler = {
-	kty: 'OCT',
+	kty: 'oct',
 	defaultAlgorithm: 'HS256',
 	normalize(algorithm, claims) {
-		const normalized = normalizeCommonManualClaims(algorithm, 'OCT', claims);
+		const normalized = normalizeCommonManualClaims(algorithm, 'oct', claims);
 		normalized.k = sanitizeClaim(claims?.k, '');
 		return normalized;
 	},
 	validate(claims) {
-		return validateOptionalBase64UrlClaim(claims, 'k', 'Key value (k)');
+		return validateRequiredBase64UrlClaim(claims, 'k', 'Key value (k)');
 	}
 };
 
-/**
- * Fallback handler for non-standard or unknown kty values.  It normalizes the common
- * JWK fields (kty, use, alg, kid, typ) and passes all other string claims through
- * unchanged, but imposes no kty-specific field requirements or validation rules.
- * This allows custom key types to function without being explicitly registered.
- */
-export const defaultKtyHandler: KtyHandler = {
-	kty: '',
-	defaultAlgorithm: '',
-	normalize(algorithm, claims) {
-		return normalizeCommonManualClaims(algorithm, sanitizeClaim(claims?.kty, ''), claims);
-	},
-	validate(_claims) {
-		return { valid: true };
-	}
-};
+export const SUPPORTED_MANUAL_KTY_OPTIONS = ['RSA', 'EC', 'OKP', 'OCT'] as const;
 
 const ktyHandlers: Record<string, KtyHandler> = {
 	RSA: rsaHandler,
@@ -201,8 +186,12 @@ const ktyHandlers: Record<string, KtyHandler> = {
 	OCT: octHandler
 };
 
-function getKtyHandler(keyType: string): KtyHandler {
-	return ktyHandlers[keyType.toUpperCase()] ?? defaultKtyHandler;
+export function isSupportedManualKty(keyType: string): boolean {
+	return keyType.toUpperCase() in ktyHandlers;
+}
+
+function getKtyHandler(keyType: string): KtyHandler | undefined {
+	return ktyHandlers[keyType.toUpperCase()];
 }
 
 function sanitizeJwkClaims(record: Record<string, unknown>): Record<string, unknown> {
@@ -400,12 +389,22 @@ export function resolveKeyByRef(keys: Record<string, unknown>[], preferredRef?: 
 
 export function normalizeManualClaims(algorithm: string, keyType: string, claims?: Record<string, unknown>): Record<string, string> {
 	const normalizedKeyType = keyType.trim().toUpperCase() || 'RSA';
-	return getKtyHandler(normalizedKeyType).normalize(algorithm, claims);
+	const handler = getKtyHandler(normalizedKeyType);
+	return handler
+		? handler.normalize(algorithm, claims)
+		: normalizeCommonManualClaims(algorithm, normalizedKeyType, claims);
 }
 
 export function validateManualClaims(claims: Record<string, string>): { valid: boolean; error?: string } {
-	const normalizedKeyType = sanitizeClaim(claims.kty, 'RSA').toUpperCase();
-	return getKtyHandler(normalizedKeyType).validate(claims);
+	const normalizedKeyType = sanitizeClaim(claims.kty, '').toUpperCase();
+	const handler = getKtyHandler(normalizedKeyType);
+	if (!handler) {
+		return {
+			valid: false,
+			error: `Key type (kty) must be one of ${SUPPORTED_MANUAL_KTY_OPTIONS.join(', ')}.`
+		};
+	}
+	return handler.validate(claims);
 }
 
 export function normalizeDescription(description?: string): { valid: boolean; value?: string; error?: string } {
@@ -429,6 +428,15 @@ export function selectBestJwk(keys: Record<string, unknown>[]): Record<string, u
 	}
 	const sigKey = keys.find(key => key.use === 'sig');
 	return sigKey ?? keys[0];
+}
+
+/**
+ * Builds a canonical JWKS JSON string from an array of JWK objects.
+ * Use this before calling parseJWKSJsonInput to validate any assembled key set,
+ * regardless of how it was produced (fetch, manual, or direct JSON input).
+ */
+export function buildJwksJson(keys: Record<string, unknown>[]): string {
+	return JSON.stringify({ keys });
 }
 
 export function parseJWKSJsonInput(jwksJson: string): JWKSJsonParseResult {
@@ -488,6 +496,13 @@ export function getValidationMaterialFromDecoded(
 		const publicKey = exportPublicKeyFromJwk(selected.key);
 		return { success: true, data: buildValidationMaterial(selected, publicKey, selectionReason, keyOptions) };
 	} catch {
+		const selectedKty = typeof selected.key.kty === 'string' ? selected.key.kty.trim().toLowerCase() : '';
+		if (selectedKty === 'oct') {
+			return {
+				success: true,
+				data: buildValidationMaterial(selected, JSON.stringify(selected.key), selectionReason, keyOptions)
+			};
+		}
 		const embeddedPem = selected.key.key;
 		if (typeof embeddedPem === 'string') {
 			return { success: true, data: buildValidationMaterial(selected, embeddedPem, selectionReason, keyOptions) };

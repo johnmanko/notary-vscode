@@ -4,6 +4,10 @@
 
 A powerful Visual Studio Code extension for decoding, inspecting, and validating JSON Web Tokens (JWTs).
 
+## Key Types
+
+See [KEY_TYPES.md](./KEY_TYPES.md)
+
 ---
 
 JWT Viewer with Remote Key Verification

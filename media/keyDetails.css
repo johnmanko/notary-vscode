@@ -282,6 +282,17 @@ body {
 	color: var(--vscode-descriptionForeground);
 }
 
+.claim-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 4px;
+}
+
+.claim-header .metadata-label {
+	margin-bottom: 0;
+}
+
 .claim-hint {
 	margin-top: 6px;
 	font-size: 11px;

@@ -13,10 +13,11 @@ import * as assert from 'node:assert';
 import { suite, test } from 'mocha';
 import { JWKSJsonValidationKey, KeySource, RefreshPeriod, URLValidationKey, ValidationKey } from '../src/types/keyManagement';
 import {
+	buildJwksJson,
 	buildKeyEditorData,
-	defaultKtyHandler,
 	ecHandler,
 	getErrorMessage,
+	isSupportedManualKty,
 	getValidationMaterialFromDecoded,
 	normalizeManualClaims,
 	octHandler,
@@ -44,6 +45,22 @@ const VALID_KEY_1: Record<string, unknown> = {
 const VALID_KEY_2: Record<string, unknown> = {
 	...VALID_KEY_1,
 	kid: 'key2'
+};
+
+const VALID_OCT_KEY: Record<string, unknown> = {
+	kty: 'oct',
+	k: 'abc_DEF-123',
+	kid: 'oct-key-1',
+	alg: 'HS256'
+};
+
+const VALID_OKP_KEY: Record<string, unknown> = {
+	kty: 'OKP',
+	crv: 'Ed25519',
+	kid: 'example-okp-key-1',
+	use: 'sig',
+	alg: 'EdDSA',
+	x: 'y3XQ-VuL7Q0LCSKgskZOkVu8g3gC17ZGXm5uj8xt4nQ'
 };
 
 const VALID_PUBLIC_PEM = [
@@ -95,7 +112,7 @@ suite('Key Manager Helpers', () => {
 		assert.strictEqual(okpClaims.kty, 'OKP');
 		assert.strictEqual(okpClaims.crv, 'Ed25519');
 		assert.strictEqual(okpClaims.x, 'abc_DEF-123');
-		assert.strictEqual(octClaims.kty, 'OCT');
+		assert.strictEqual(octClaims.kty, 'oct');
 		assert.strictEqual(octClaims.k, 'abc_DEF-123');
 	});
 
@@ -104,6 +121,19 @@ suite('Key Manager Helpers', () => {
 		assert.strictEqual(validateManualClaims({ kty: 'RSA', e: 'bad+/value' }).valid, false);
 		assert.strictEqual(validateManualClaims({ kty: 'EC', x: 'abc_DEF-123', y: 'xyz_DEF-456' }).valid, true);
 		assert.strictEqual(validateManualClaims({ kty: 'EC', x: 'bad+/value' }).valid, false);
+		assert.strictEqual(validateManualClaims({ kty: 'CUSTOM', anything: 'goes' }).valid, false);
+	});
+
+	test('normalizeManualClaims should strip unsupported custom claims', () => {
+		const claims = normalizeManualClaims('RS256', 'RSA', { kty: 'RSA', alg: 'RS256', kid: 'key1', e: 'AQAB', n: VALID_RSA_N, issuer: 'custom' });
+		assert.strictEqual(claims.issuer, undefined);
+		assert.strictEqual(claims.kty, 'RSA');
+	});
+
+	test('isSupportedManualKty should only accept supported JWT validation key types', () => {
+		assert.strictEqual(isSupportedManualKty('RSA'), true);
+		assert.strictEqual(isSupportedManualKty('ec'), true);
+		assert.strictEqual(isSupportedManualKty('CUSTOM'), false);
 	});
 
 	test('parseJWKSJsonInput should reject malformed roots and filter non-object keys', () => {
@@ -116,6 +146,16 @@ suite('Key Manager Helpers', () => {
 		assert.strictEqual(parsed.jwkObjects?.length, 2);
 		assert.strictEqual(parsed.selectedJwk?.kid, 'key1');
 	});
+
+		test('buildJwksJson should produce parseable canonical JWKS JSON', () => {
+			const jwksJson = buildJwksJson([VALID_KEY_1, VALID_KEY_2]);
+			const parsed = parseJWKSJsonInput(jwksJson);
+
+			assert.strictEqual(parsed.success, true);
+			assert.strictEqual(parsed.jwkObjects?.length, 2);
+			assert.strictEqual(parsed.selectedJwk?.kid, 'key1');
+			assert.strictEqual(jwksJson, JSON.stringify({ keys: [VALID_KEY_1, VALID_KEY_2] }));
+		});
 
 	test('helper guards should cover empty PEM, non-object JSON, and invalid refs', () => {
 		const pemValidation = validateManualPemInput('   ');
@@ -147,6 +187,12 @@ suite('Key Manager Helpers', () => {
 		const result = getValidationMaterialFromDecoded(createDecodedKeySet([VALID_KEY_1, VALID_KEY_2]), 'missing-kid');
 		assert.strictEqual(result.success, false);
 		assert.ok((result.error || '').includes('No key with kid'));
+	});
+
+	test('getValidationMaterialFromDecoded should return oct JWK JSON for symmetric validation', () => {
+		const result = getValidationMaterialFromDecoded(createDecodedKeySet([VALID_OCT_KEY]), 'oct-key-1');
+		assert.strictEqual(result.success, true);
+		assert.strictEqual(result.data?.publicKey, JSON.stringify(VALID_OCT_KEY));
 	});
 
 	test('buildKeyEditorData should preserve URL and JWKS raw JSON sources', () => {
@@ -185,6 +231,27 @@ suite('Key Manager Helpers', () => {
 		assert.strictEqual(jwksData.rawJson, jwksKey.rawJwksJson);
 		assert.deepStrictEqual(invalidData.claims, {});
 		assert.strictEqual(invalidData.decodedKey, 'not-json');
+	});
+
+	test('buildKeyEditorData should export PEM for OKP JWKs', () => {
+		const jwksKey: JWKSJsonValidationKey = {
+			id: 'jwks-okp-editor-helper',
+			name: 'JWKS OKP Editor Helper',
+			source: KeySource.JWKSJson,
+			rawJwksJson: JSON.stringify({ keys: [VALID_OKP_KEY] }),
+			keyData: createKeySetData([VALID_OKP_KEY]),
+			createdAt: Date.now()
+		};
+
+		const jwksData = buildKeyEditorData(jwksKey, Buffer.from(jwksKey.keyData, 'base64').toString('utf8'));
+
+		assert.strictEqual(jwksData.claims.kty, 'OKP');
+		assert.strictEqual(jwksData.decodedKey, [
+			'-----BEGIN PUBLIC KEY-----',
+			'MCowBQYDK2VwAyEAy3XQ+VuL7Q0LCSKgskZOkVu8g3gC17ZGXm5uj8xt4nQ=',
+			'-----END PUBLIC KEY-----',
+			''
+		].join('\n'));
 	});
 });
 
@@ -252,13 +319,13 @@ suite('KtyHandler — per-handler isolation', () => {
 	});
 
 	test('octHandler metadata is correct', () => {
-		assert.strictEqual(octHandler.kty, 'OCT');
+		assert.strictEqual(octHandler.kty, 'oct');
 		assert.strictEqual(octHandler.defaultAlgorithm, 'HS256');
 	});
 
 	test('octHandler.normalize injects oct-specific fields', () => {
 		const claims = octHandler.normalize('HS256', { k: 'abc_DEF-123' });
-		assert.strictEqual(claims.kty, 'OCT');
+		assert.strictEqual(claims.kty, 'oct');
 		assert.strictEqual(claims.k, 'abc_DEF-123');
 		assert.ok(!('e' in claims));
 		assert.ok(!('crv' in claims));
@@ -267,20 +334,10 @@ suite('KtyHandler — per-handler isolation', () => {
 	test('octHandler.validate accepts valid oct claims and rejects bad key value', () => {
 		assert.deepStrictEqual(octHandler.validate({ kty: 'oct', k: 'abc_DEF-123' }), { valid: true });
 		assert.strictEqual(octHandler.validate({ kty: 'oct', k: 'bad+/value' }).valid, false);
+		assert.strictEqual(octHandler.validate({ kty: 'oct', k: '' }).valid, false);
 	});
 
-	test('defaultKtyHandler normalizes common fields without kty-specific enforcement', () => {
-		const claims = defaultKtyHandler.normalize('custom-alg', { kty: 'CUSTOM', customField: 'value', alg: 'custom-alg' });
-		assert.strictEqual(claims.kty, 'CUSTOM');
-		assert.strictEqual(claims.alg, 'custom-alg');
-	});
-
-	test('defaultKtyHandler.validate always returns valid regardless of claims', () => {
-		assert.deepStrictEqual(defaultKtyHandler.validate({ kty: 'CUSTOM', e: 'bad+/value', n: 'bad+/value' }), { valid: true });
-		assert.deepStrictEqual(defaultKtyHandler.validate({}), { valid: true });
-	});
-
-	test('normalizeManualClaims uses defaultKtyHandler for unknown kty', () => {
+	test('normalizeManualClaims preserves the provided kty while omitting unsupported fields', () => {
 		const claims = normalizeManualClaims('custom-alg', 'CUSTOM', { kty: 'CUSTOM', alg: 'custom-alg' });
 		assert.strictEqual(claims.kty, 'CUSTOM');
 		assert.ok(!('e' in claims));
@@ -288,7 +345,10 @@ suite('KtyHandler — per-handler isolation', () => {
 		assert.ok(!('k' in claims));
 	});
 
-	test('validateManualClaims uses defaultKtyHandler for unknown kty', () => {
-		assert.deepStrictEqual(validateManualClaims({ kty: 'CUSTOM', anything: 'goes' }), { valid: true });
+	test('validateManualClaims rejects unsupported kty values', () => {
+		assert.deepStrictEqual(validateManualClaims({ kty: 'CUSTOM', anything: 'goes' }), {
+			valid: false,
+			error: 'Key type (kty) must be one of RSA, EC, OKP, OCT.'
+		});
 	});
 });

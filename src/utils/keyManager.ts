@@ -13,6 +13,7 @@ import { ValidationKey, isURLKey, isJWKSJsonKey, needsRefresh, RefreshPeriod } f
 import { KeyStorageManager } from './keyStorage';
 import { FetchResult, fetchOIDCKeys } from './oidcKeyFetcher';
 import {
+	buildJwksJson,
 	buildKeyEditorData,
 	getErrorMessage,
 	getValidationMaterialFromDecoded,
@@ -93,7 +94,11 @@ export class KeyManager {
 				return { success: false, error: 'Key name is required' };
 			}
 
-			if (!publicKey || publicKey.trim().length === 0) {
+			const normalizedAlgorithm = algorithm.trim() || 'RS256';
+			const normalizedKeyType = keyType.trim().toUpperCase() || 'RSA';
+			const requiresPem = normalizedKeyType !== 'OCT';
+
+			if (requiresPem && (!publicKey || publicKey.trim().length === 0)) {
 				return { success: false, error: 'Public key is required' };
 			}
 
@@ -102,17 +107,24 @@ export class KeyManager {
 				return { success: false, error: descriptionResult.error };
 			}
 
-			const pemValidation = validateManualPemInput(publicKey);
-			if (!pemValidation.valid) {
-				return { success: false, error: pemValidation.error || 'Invalid public key format' };
+			if (requiresPem) {
+				const pemValidation = validateManualPemInput(publicKey);
+				if (!pemValidation.valid) {
+					return { success: false, error: pemValidation.error || 'Invalid public key format' };
+				}
 			}
 
-			const normalizedAlgorithm = algorithm.trim() || 'RS256';
-			const normalizedKeyType = keyType.trim().toUpperCase() || 'RSA';
 			const normalizedClaims = normalizeManualClaims(normalizedAlgorithm, normalizedKeyType, claims);
+			if (normalizedKeyType === 'OCT' && typeof normalizedClaims.k !== 'string' && publicKey.trim()) {
+				normalizedClaims.k = publicKey.trim();
+			}
 			const claimsValidation = validateManualClaims(normalizedClaims);
 			if (!claimsValidation.valid) {
 				return { success: false, error: claimsValidation.error || 'Invalid manual key claims' };
+			}
+			const jwksValidation = parseJWKSJsonInput(buildJwksJson([normalizedClaims]));
+			if (!jwksValidation.success) {
+				return { success: false, error: jwksValidation.error || 'Generated JWKS failed validation' };
 			}
 			const key = await this.storageManager.addManualKey(
 				name.trim(),
@@ -166,8 +178,9 @@ export class KeyManager {
 			}
 
 			const jwkObjects = fetchResult.jwks.keys.filter(key => isJwkObject(key));
-			if (jwkObjects.length === 0) {
-				return { success: false, error: 'No suitable keys found in JWKS' };
+			const jwksValidation = parseJWKSJsonInput(buildJwksJson(jwkObjects));
+			if (!jwksValidation.success) {
+				return { success: false, error: jwksValidation.error || 'Fetched JWKS failed validation' };
 			}
 			// Store the key
 			const key = await this.storageManager.addURLKey(
@@ -294,8 +307,9 @@ export class KeyManager {
 			}
 
 			const jwkObjects = fetchResult.jwks.keys.filter(key => isJwkObject(key));
-			if (jwkObjects.length === 0) {
-				return { success: false, error: 'No suitable keys found in JWKS' };
+			const refreshJwksValidation = parseJWKSJsonInput(buildJwksJson(jwkObjects));
+			if (!refreshJwksValidation.success) {
+				return { success: false, error: refreshJwksValidation.error || 'Refreshed JWKS failed validation' };
 			}
 			// Update the stored key
 			const updatedKey = await this.storageManager.updateURLKey(id, jwkObjects);
@@ -372,22 +386,33 @@ export class KeyManager {
 				return { success: false, error: 'Key name is required' };
 			}
 
+			const normalizedAlgorithm = algorithm.trim() || 'RS256';
+			const normalizedKeyType = keyType.trim().toUpperCase() || 'RSA';
+			const requiresPem = normalizedKeyType !== 'OCT';
+
 			const descriptionResult = normalizeDescription(description);
 			if (!descriptionResult.valid) {
 				return { success: false, error: descriptionResult.error };
 			}
 
-			const pemValidation = validateManualPemInput(publicKey);
-			if (!pemValidation.valid) {
-				return { success: false, error: pemValidation.error || 'Invalid public key format' };
+			if (requiresPem) {
+				const pemValidation = validateManualPemInput(publicKey);
+				if (!pemValidation.valid) {
+					return { success: false, error: pemValidation.error || 'Invalid public key format' };
+				}
 			}
 
-			const normalizedAlgorithm = algorithm.trim() || 'RS256';
-			const normalizedKeyType = keyType.trim().toUpperCase() || 'RSA';
 			const normalizedClaims = normalizeManualClaims(normalizedAlgorithm, normalizedKeyType, claims);
+			if (normalizedKeyType === 'OCT' && typeof normalizedClaims.k !== 'string' && publicKey.trim()) {
+				normalizedClaims.k = publicKey.trim();
+			}
 			const claimsValidation = validateManualClaims(normalizedClaims);
 			if (!claimsValidation.valid) {
 				return { success: false, error: claimsValidation.error || 'Invalid manual key claims' };
+			}
+			const jwksValidation = parseJWKSJsonInput(buildJwksJson([normalizedClaims]));
+			if (!jwksValidation.success) {
+				return { success: false, error: jwksValidation.error || 'Generated JWKS failed validation' };
 			}
 			const result = await this.storageManager.updateManualKey(
 				id,

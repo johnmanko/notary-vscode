@@ -153,9 +153,7 @@ async function validateParsedKey(
 /**
  * Validate JWT signature using a public key
  * 
- * NOTE: This is a basic implementation that demonstrates the validation flow.
- * For production use, consider using a dedicated JWT library like 'jsonwebtoken' or 'jose'
- * which provides comprehensive support for all JWT algorithms and proper key handling.
+ * Uses the jose library for JWK/SPKI key import and compact JWT signature verification.
  */
 export async function validateJWTSignature(token: string, publicKeyData: string, metadata?: ManualKeyValidationMetadata): Promise<ValidationResult> {
 	try {
